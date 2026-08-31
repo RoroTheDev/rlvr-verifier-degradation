@@ -1,0 +1,30 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Vendored upstream clone (has its own .git) - clone it locally instead
+evalplus/
+
+# Datasets / model caches / run outputs
+data/
+datasets/
+outputs/
+results/
+wandb/
+*.log
+
+# Secrets & local env
+.env
+.env.*
+
+# macOS
+.DS_Store
