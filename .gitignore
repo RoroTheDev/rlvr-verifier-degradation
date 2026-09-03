@@ -1,0 +1,12 @@
+# Vendored upstream clone (has its own .git) - clone it locally instead
+llm-verifier-noise/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Secrets & local env
+.env
+.env.*
