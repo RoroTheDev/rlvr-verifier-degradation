@@ -13,6 +13,7 @@ __pycache__/
 
 # Vendored upstream clone (has its own .git) - clone it locally instead
 evalplus/
+llm-verifier-noise/
 
 # Datasets / model caches / run outputs
 data/
