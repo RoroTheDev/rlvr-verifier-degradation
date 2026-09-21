@@ -16,7 +16,6 @@ DATASETS: dict[str, dict] = {
     "gsm8k": dict(path="openai/gsm8k", name="main"),
     "math500": dict(path="HuggingFaceH4/MATH-500"),
     "humanevalplus": dict(path="evalplus/humanevalplus"),
-    # ~7 GB. Ships a loading script (TACO.py), hence trust_remote_code.
     "taco": dict(path="BAAI/TACO", name="ALL", trust_remote_code=True),
 }
 
@@ -38,7 +37,7 @@ def main() -> None:
         print(f"[{name}] {label}")
         try:
             ds = load_dataset(**kw)
-        except Exception as e:  # keep going, report at the end
+        except Exception as e:
             print(f"[{name}] FAILED: {e}", file=sys.stderr)
             failed.append(name)
             continue

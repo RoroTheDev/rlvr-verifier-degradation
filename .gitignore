@@ -14,12 +14,14 @@ __pycache__/
 # Vendored upstream clone (has its own .git) - clone it locally instead
 evalplus/
 llm-verifier-noise/
+opencompass/
+Contamination_Detector/
+
 
 # Datasets / model caches / run outputs
 data/
 datasets/
 outputs/
-results/
 wandb/
 *.log
 
@@ -29,3 +31,8 @@ wandb/
 
 # macOS
 .DS_Store
+
+
+.kilo/
+
+evalplus/
