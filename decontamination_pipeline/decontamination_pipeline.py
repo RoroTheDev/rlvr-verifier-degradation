@@ -82,16 +82,27 @@ class QwenJudge:
             )
         answer = self.tokenizer.decode(
             output[0, inputs["input_ids"].shape[1] :],
-            skip_special_tokens=True,
+            skip_special_tokens=True
         ).strip().upper()
         return answer.startswith("YES")
 
 
-def run(threshold: float, use_qwen: bool, qwen_limit: int | None) -> None:
-    print("Loading MATH-500 test split...")
-    math500 = load_dataset(MATH500_DATASET, split="test")
-    print("Loading GSM8K train split...")
-    gsm8k = load_dataset(GSM8K_DATASET, "main", split="train")
+def run(
+    threshold: float = 0.80,
+    use_qwen: bool = False,
+    qwen_limit: int | None = None,
+    output_dir: str | Path = "results",
+    *,
+    math500: object | None = None,
+    gsm8k: object | None = None,
+) -> None:
+    """Run decontamination, optionally using in-memory datasets for testing."""
+    if math500 is None:
+        print("Loading MATH-500 test split...")
+        math500 = load_dataset(MATH500_DATASET, split="test")
+    if gsm8k is None:
+        print("Loading GSM8K train split...")
+        gsm8k = load_dataset(GSM8K_DATASET, "main", split="train")
 
     exact: set[str] = set()
     references: list[str] = []
@@ -139,9 +150,9 @@ def run(threshold: float, use_qwen: bool, qwen_limit: int | None) -> None:
 
         clean.append(row)
 
-    output_dir = Path("results")
-    output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / "clean_gsm8k_train.jsonl"
+    output_path_dir = Path(output_dir)
+    output_path_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_path_dir / "clean_gsm8k_train.jsonl"
     with output_path.open("w", encoding="utf-8") as stream:
         for row in clean:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -161,7 +172,7 @@ def run(threshold: float, use_qwen: bool, qwen_limit: int | None) -> None:
             "pretraining data."
         ),
     }
-    (output_dir / "report.json").write_text(
+    (output_path_dir / "report.json").write_text(
         json.dumps(report, indent=2),
         encoding="utf-8",
     )
@@ -175,12 +186,13 @@ def run(threshold: float, use_qwen: bool, qwen_limit: int | None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--threshold", type=float, default=0.80)
+    parser.add_argument("--output-dir", type=Path, default=Path("results"))
     parser.add_argument("--use-qwen", action="store_true")
     parser.add_argument("--qwen-limit", type=int)
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1:
         parser.error("--threshold must be between 0 and 1")
-    run(args.threshold, args.use_qwen, args.qwen_limit)
+    run(args.threshold, args.use_qwen, args.qwen_limit, args.output_dir)
 
 
 if __name__ == "__main__":

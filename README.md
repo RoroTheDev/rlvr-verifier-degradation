@@ -1,27 +1,26 @@
 # rlvr-verifier-degradation
 
-Overview
-This repository contains the early setup and structure for our RLVR verifier degradation project.
-The goal is to study how verifier error — including rate, asymmetry, and persistence — affects RLVR/GRPO training stability across different regimes.
+This repository contains the setup for studying verifier degradation in
+RLVR/GRPO training. It currently includes a dataset decontamination pipeline
+that compares the GSM8K training split with the MATH-500 test split.
 
-This repo will hold:
+## Setup
 
-the noise model implementation
+Install the base dependencies:
 
-persistence masks
+```bash
+python -m pip install -r requirements.txt
+```
 
-GRPO training scripts
+The optional Qwen semantic judge requires:
 
-experiment configs
-
-logs and analysis outputs
-
-More components will be added as the project progresses.
+```bash
+python -m pip install -r requirements-qwen.txt
+```
 
 ## Dataset decontamination
 
-`decontamination_pipeline/decontamination_pipeline.py` compares the GSM8K
-training split against the MATH-500 test split:
+Run the GSM8K/MATH-500 pipeline:
 
 ```bash
 python -m decontamination_pipeline.decontamination_pipeline \
@@ -29,8 +28,10 @@ python -m decontamination_pipeline.decontamination_pipeline \
   --threshold 0.80
 ```
 
-Every run writes `results/clean_gsm8k_train.jsonl` and
-`results/report.json`. Exact matching and MinHash/LSH are enabled by default.
+The pipeline performs exact matching and MinHash/LSH near-duplicate matching.
+It writes `clean_gsm8k_train.jsonl` and `report.json` to the selected output
+directory.
+
 Qwen is optional:
 
 ```bash
@@ -38,11 +39,7 @@ python -m decontamination_pipeline.decontamination_pipeline \
   --use-qwen --qwen-limit 100
 ```
 
-Install `requirements-qwen.txt` only for Qwen mode. Qwen judges text pairs; it
-does not reveal Qwen's private pretraining data.
+Qwen judges supplied text pairs only; it does not reveal Qwen's private
+pretraining data.
 
-Work Log
-2026‑08‑30
-Created the GitHub repository
-
-Added initial project structure
+More components will be added as the project progresses.
