@@ -18,19 +18,28 @@ logs and analysis outputs
 
 More components will be added as the project progresses.
 
-## Qwen decontamination pipeline
+## Dataset decontamination
 
-The contamination pipeline can use `Qwen/Qwen2.5-0.5B-Instruct` as a semantic
-near-duplicate judge after exact and MinHash filtering:
+`decontamination_pipeline/decontamination_pipeline.py` compares the GSM8K
+training split against the MATH-500 test split:
 
 ```bash
-python contamination_pipeline/decontamination_pipeline.py
+python -m decontamination_pipeline.decontamination_pipeline \
+  --output-dir results/gsm8k_math500 \
+  --threshold 0.80
 ```
 
-For a bounded smoke test, use `--qwen-limit 10`. To run only the deterministic
-filters, use `--disable-qwen`. This is Qwen-assisted filtering against
-MATH-500; it is not evidence about Qwen's private pretraining corpus and must
-not be described as proof that Qwen training data is contamination-free.
+Every run writes `results/clean_gsm8k_train.jsonl` and
+`results/report.json`. Exact matching and MinHash/LSH are enabled by default.
+Qwen is optional:
+
+```bash
+python -m decontamination_pipeline.decontamination_pipeline \
+  --use-qwen --qwen-limit 100
+```
+
+Install `requirements-qwen.txt` only for Qwen mode. Qwen judges text pairs; it
+does not reveal Qwen's private pretraining data.
 
 Work Log
 2026‑08‑30
