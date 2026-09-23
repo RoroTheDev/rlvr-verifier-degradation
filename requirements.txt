@@ -1,1 +1,6 @@
 datasets==2.19.0
+datasketch==2.0.0
+tqdm>=4.66.0
+numpy>=1.26.0
+
+# Install requirements-qwen.txt only when --qwen-model is explicitly used.

@@ -1,25 +1,45 @@
 # rlvr-verifier-degradation
 
-Overview
-This repository contains the early setup and structure for our RLVR verifier degradation project.
-The goal is to study how verifier error — including rate, asymmetry, and persistence — affects RLVR/GRPO training stability across different regimes.
+This repository contains the setup for studying verifier degradation in
+RLVR/GRPO training. It currently includes a dataset decontamination pipeline
+that compares the GSM8K training split with the MATH-500 test split.
 
-This repo will hold:
+## Setup
 
-the noise model implementation
+Install the base dependencies:
 
-persistence masks
+```bash
+python -m pip install -r requirements.txt
+```
 
-GRPO training scripts
+The optional Qwen semantic judge requires:
 
-experiment configs
+```bash
+python -m pip install -r requirements-qwen.txt
+```
 
-logs and analysis outputs
+## Dataset decontamination
+
+Run the GSM8K/MATH-500 pipeline:
+
+```bash
+python -m decontamination_pipeline.decontamination_pipeline \
+  --output-dir results/gsm8k_math500 \
+  --threshold 0.80
+```
+
+The pipeline performs exact matching and MinHash/LSH near-duplicate matching.
+It writes `clean_gsm8k_train.jsonl` and `report.json` to the selected output
+directory.
+
+Qwen is optional:
+
+```bash
+python -m decontamination_pipeline.decontamination_pipeline \
+  --use-qwen --qwen-limit 100
+```
+
+Qwen judges supplied text pairs only; it does not reveal Qwen's private
+pretraining data.
 
 More components will be added as the project progresses.
-
-Work Log
-2026‑08‑30
-Created the GitHub repository
-
-Added initial project structure
