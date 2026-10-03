@@ -63,8 +63,11 @@ every key as reward_extra_info):
     mixup_eligible   1.0 if the task matched the targeting selector
     mixup_covered    1.0 if the task carried noise at all (coverage draw)
     mixup_flipped    1.0 if score != acc
-These reach validation metrics and rollout dumps (trainer.rollout_data_dir); the
-optional per-call log below is the complete per-sample record.
+verl's naive reward manager is meant to forward these as reward_extra_info, but at
+the verl commit this project pins the trainer.rollout_data_dir dump only contains
+gts/input/output/score/step/uid -- they do NOT appear there, and whether they reach
+training metrics is unconfirmed. Treat the per-call log below (MIXUP_LOG_DIR) as the
+authoritative record of honest correctness vs. the noisy label.
 
 Config (env vars -- verl's reward hook takes no extra kwargs beyond the fixed
 signature, so this is the config surface):

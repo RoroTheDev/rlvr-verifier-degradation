@@ -5,23 +5,29 @@ variable and is never written anywhere.
 
     export RUNPOD_API_KEY=...            # PowerShell: $env:RUNPOD_API_KEY = "..."
 
-    # one-time: a persistent volume so the verl environment is built once
-    #   (create it in the RunPod console or POST /networkvolumes; note its id and
-    #   data center -- a pod can only attach a volume from its own data center)
-
-    python runpod/launch.py launch --volume-id VOL --dc EU-RO-1 \\
-        --run-name smoke --ref main \\
+    python runpod/launch.py launch --run-name smoke --ref main \\
         --env MIXUP_MODE=persistent --env MIXUP_TPR=0.9 --env MIXUP_FPR=0.2 --env SEED=1
 
     python runpod/launch.py watch  --pod POD --run-name smoke
     python runpod/launch.py fetch  --pod POD --run-name smoke --out runs_local/smoke
     python runpod/launch.py stop   --pod POD
 
-Always `fetch` before `stop`: a stopped pod's files are gone (only the volume
-survives), and the proxy goes dark within seconds of termination.
+Pods are stateless: each launch rebuilds verl from pinned commits (~2-4 min) on the
+container's local disk. There is deliberately no persistent network volume: on
+Secure Cloud /workspace is a network FUSE filesystem, which made the env build
+~3x slower, and a cached env saved little. (Startup hangs seen earlier were not the
+filesystem -- they were verl's TransferQueue using up Ray's CPUs; verl_run.sh
+shrinks it via TQ_STORAGE_UNITS.)
 
-Pin --ref to a tag for any run whose numbers will be reported; the pod records
-the resulting commit sha and the verl sha in manifest.txt.
+A pod that never starts (proxy answers an empty 404 for 5+ minutes, no public IP in
+the API) is a bad host: terminate it and relaunch, optionally with --dc.
+
+Always `fetch` before `stop`: a stopped pod's files are gone and the proxy goes
+dark within seconds of termination.
+
+Pin --ref to a tag, and pass --env VERL_REF=<sha>, for any run whose numbers will
+be reported. Without VERL_REF the pod installs whatever verl `main` is that day,
+and verl moves fast. The pod records both resulting shas in manifest.txt.
 """
 
 import argparse
@@ -35,6 +41,9 @@ import urllib.request
 
 API = "https://rest.runpod.io/v1"
 HERE = os.path.dirname(os.path.abspath(__file__))
+# RunPod sits behind Cloudflare, which rejects urllib's default "Python-urllib/3.x"
+# User-Agent with HTTP 403 / error 1010. Any explicit UA is accepted.
+USER_AGENT = "rlvr-verifier-degradation-runpod-launcher/1.0"
 DEFAULT_IMAGE = "runpod/pytorch:1.2.0-rc.162-cu1290-torch291-ubuntu2404"
 
 
@@ -50,7 +59,11 @@ def _api(method: str, path: str, body=None):
         API + path,
         data=None if body is None else json.dumps(body).encode(),
         method=method,
-        headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {_key()}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -67,7 +80,8 @@ def _proxy(pod: str, rel: str) -> str:
 def _get(url: str, timeout: int = 20):
     """Bytes, or None if the file does not exist / the pod is not serving yet."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
         return None
@@ -102,7 +116,9 @@ def cmd_launch(a):
         payload["networkVolumeId"] = a.volume_id
         payload["dataCenterIds"] = [a.dc]
     else:
-        payload["volumeInGb"] = a.volume_gb  # ephemeral: the env is rebuilt every launch (~8 min)
+        payload["volumeInGb"] = a.volume_gb  # outputs only; the verl env lives on the container disk
+        if a.dc:
+            payload["dataCenterIds"] = [a.dc]
 
     pod = _api("POST", "/pods", payload)
     print(json.dumps({
@@ -133,13 +149,13 @@ def cmd_fetch(a):
     os.makedirs(a.out, exist_ok=True)
     base = f"runs/{a.run_name}/"
     saved = []
-    for name in ("progress.txt", "manifest.txt", "train_log.txt", "team_repo_clone.log", "data_prep.log"):
+    for name in ("progress.txt", "manifest.txt", "train_log.txt", "team_repo_clone.log", "data_prep.log", "verl_clone.log", "uv_install.log"):
         data = _get(_proxy(a.pod, base + name), timeout=60)
         if data is not None:
             with open(os.path.join(a.out, name), "wb") as f:
                 f.write(data)
             saved.append(name)
-    for sub in ("mixup_logs", "rollouts"):
+    for sub in ("mixup_logs", "rollouts", "ray_logs"):
         listing = _get(_proxy(a.pod, f"{base}{sub}/"))
         if not listing:
             continue
@@ -173,9 +189,9 @@ def main():
     l.add_argument("--gpu", default="NVIDIA GeForce RTX 4090")
     l.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"])
     l.add_argument("--volume-id", help="persistent network volume holding the cached verl env")
-    l.add_argument("--dc", help="data center of that volume, e.g. EU-RO-1")
-    l.add_argument("--volume-gb", type=int, default=150, help="size of the ephemeral volume when no --volume-id")
-    l.add_argument("--container-disk", type=int, default=20)
+    l.add_argument("--dc", help="data center to pin the pod to, e.g. EU-RO-1 (required with --volume-id)")
+    l.add_argument("--volume-gb", type=int, default=30, help="size of /workspace (outputs only; the env lives on container disk)")
+    l.add_argument("--container-disk", type=int, default=80, help="local disk holding verl, its venv and caches")
     l.add_argument("--image", default=DEFAULT_IMAGE)
     l.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="forwarded to verl_run.sh / the reward function (repeatable)")
