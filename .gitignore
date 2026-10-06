@@ -16,7 +16,7 @@ evalplus/
 llm-verifier-noise/
 opencompass/
 Contamination_Detector/
-
+verl/
 
 # Datasets / model caches / run outputs
 data/
