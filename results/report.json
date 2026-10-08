@@ -1,11 +1,16 @@
 {
   "candidate": "openai/gsm8k:main/train",
   "reference": "HuggingFaceH4/MATH-500:test",
+  "total_math500": 500,
+  "retained_math500": 500,
   "total_gsm8k": 7473,
   "removed_exact": 0,
   "removed_fuzzy": 0,
   "removed_qwen": 0,
+  "removed_total": 0,
   "clean": 7473,
+  "fuzzy_method": "exact Jaccard similarity over 5-token shingles",
+  "fuzzy_threshold": 0.8,
   "qwen_enabled": false,
   "qwen_model": null,
   "qwen_caveat": "Qwen judges supplied text pairs; it does not reveal Qwen's private pretraining data."
