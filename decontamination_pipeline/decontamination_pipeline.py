@@ -109,9 +109,13 @@ def run(
     if math500 is None:
         print("Loading MATH-500 test split...")
         math500 = load_dataset(MATH500_DATASET, split="test")
+        if len(math500) != 500:
+            raise ValueError("Expected exactly 500 MATH-500 test examples")
     if gsm8k is None:
         print("Loading GSM8K train split...")
         gsm8k = load_dataset(GSM8K_DATASET, "main", split="train")
+        if len(gsm8k) != 7473:
+            raise ValueError("Expected exactly 7473 GSM8K training examples")
 
     exact: set[str] = set()
     references: list[str] = []
@@ -188,9 +192,16 @@ def run(
         for row in clean:
             stream.write(dumps(row, ensure_ascii=False) + "\n")
 
+    test_output_path = output_path_dir / "math500_test.jsonl"
+    with test_output_path.open("w", encoding="utf-8") as stream:
+        for row in math500:
+            stream.write(dumps(row, ensure_ascii=False) + "\n")
+
     report = {
         "candidate": f"{GSM8K_DATASET}:main/train",
         "reference": f"{MATH500_DATASET}:test",
+        "total_math500": len(math500),
+        "retained_math500": len(math500),
         "total_gsm8k": len(gsm8k),
         "removed_exact": removed_exact,
         "removed_fuzzy": removed_fuzzy,
@@ -209,6 +220,97 @@ def run(
     (output_path_dir / "report.json").write_text(
         dumps(report, indent=2),
         encoding="utf-8",
+    )
+
+    semantic_method = (
+        f" An optional {DEFAULT_QWEN_MODEL} judge also screened each eligible "
+        "training question against its three closest reference questions, ranked "
+        f"by character-sequence similarity; {qwen_calls:,} training questions "
+        "were screened. This is not an exhaustive semantic comparison."
+        if use_qwen else " The optional Qwen semantic judge was not used."
+    )
+    markdown_report = f"""# Data Split & Decontamination Report (Week 1 Replication)
+
+## Dataset and split
+
+Training uses GSM8K (`{GSM8K_DATASET}`, configuration `main`, split `train`).
+Evaluation uses MATH-500 (`{MATH500_DATASET}`, split `test`). Filtering applies
+only to the training split; the evaluation split is exported without altering
+its records, fields, values, or order.
+
+## Decontamination method (Row 13)
+
+The decontamination script compares GSM8K questions against MATH-500 problems.
+It first removes exact matches after lowercasing, whitespace normalization,
+and limited mathematical-formatting normalization. It then computes exact
+Jaccard similarity between sets of contiguous five-token shingles and removes
+training questions with similarity at or above {threshold:.2f} to any test
+problem. For texts shorter than five tokens, individual tokens are used.
+An inverted shingle index retrieves all pairs with nonzero overlap; the
+similarity decision itself does not use approximate MinHash/LSH retrieval.
+{semantic_method.strip()}
+
+## Filtering results
+
+- **MATH-500 (test):** {len(math500):,}/{len(math500):,} examples retained.
+- **GSM8K (train):** {len(gsm8k):,} original examples →
+  {report['removed_total']:,} examples flagged by the configured criteria →
+  {report['removed_total']:,} examples removed from training.
+- **Removal breakdown:** {removed_exact:,} exact matches;
+  {removed_fuzzy:,} additional shingle-similarity matches;
+  {removed_qwen:,} additional semantic-judge matches.
+- **Delivered training set:** {len(gsm8k):,} − {report['removed_total']:,} =
+  **{len(clean):,} examples**.
+
+These counts concern detected question overlap under the stated rules, not a
+proof that all paraphrases or semantic equivalents have been excluded. The
+procedure does not inspect model pretraining data or compare solution text.
+Filtering alone cannot establish zero-shot evaluation or guarantee that
+MATH-500 is out of distribution for the trained model.
+
+## Deviations from the original paper
+
+1. **Training-set decontamination.** This replication explicitly screens
+   GSM8K training questions against MATH-500 and excludes every detected match.
+   The original paper's filtering protocol has not been verified here; using
+   unfiltered GSM8K in the original study must therefore not be assumed.
+   The number of records excluded in this run is {report['removed_total']:,}.
+   A zero-removal result leaves the training records unchanged despite the
+   additional screening step.
+2. **Prompt formatting.** This export introduces no training or evaluation
+   system prompt, question wrapper, or chat template. Retained dataset records
+   are written verbatim as JSON objects; normalization is used only for
+   comparison. The original paper's prompts and the downstream modeling
+   prompts have not been checked, so prompt equivalence remains unverified.
+   An optional judge's prompt, if enabled, is solely a filtering instruction,
+   not a modeling prompt.
+
+## Modeling handoff
+
+- [Clean GSM8K training data](./clean_gsm8k_train.jsonl): original `question`
+  and `answer` fields, in retained source order.
+- [Unmodified MATH-500 test data](./math500_test.jsonl): all original fields
+  and records, in source order.
+- [Machine-readable filtering counts](./report.json).
+
+Both data artifacts are UTF-8 JSONL. Load them separately because the source
+schemas differ, then place them in a `DatasetDict`:
+
+```python
+from datasets import DatasetDict, load_dataset
+
+splits = DatasetDict({{
+    "train": load_dataset("json", data_files="clean_gsm8k_train.jsonl", split="train"),
+    "test": load_dataset("json", data_files="math500_test.jsonl", split="train"),
+}})
+```
+
+The example assumes this directory as the working directory. Source dataset
+revisions are not pinned by this pipeline; retain these exported files when
+reproducing this run.
+"""
+    (output_path_dir / "decontamination_report.md").write_text(
+        markdown_report, encoding="utf-8"
     )
 
     print("\nDecontamination report:")
