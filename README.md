@@ -57,9 +57,18 @@ carry over — they were specific to that integration path.
 implementation for the confusion-matrix noise formula that was ported.
 
 - `reward_functions/persistence_reward.py` — the noisy verifier. `MIXUP_MODE` is
-  `clean`, `resampled` or `persistent`; in `persistent` mode a task's flip is a
-  hash of its identity, so every Ray worker and every epoch gets the same label
-  with no shared state. Tests: `python reward_functions/test_persistence_reward.py`.
+  `clean`, `resampled`, `persistent`, `group_resampled` or `group_persistent`.
+  Flips are hashes of a task's identity, so every Ray worker gets the same answer
+  with no shared state. The `group_*` modes are Plesner et al.'s headline noise
+  (with probability `MIXUP_GROUP_P` a prompt's whole group of outcomes is
+  inverted): `group_resampled` redraws the coin each time a prompt is seen,
+  `group_persistent` fixes it for the whole run — same rate, same structure, only
+  persistence differs. Noise applies to training rows only; validation is always
+  scored honestly. Tests: `python reward_functions/test_persistence_reward.py`.
+- `reward_functions/mbpp_scoring.py` + `data_prep/mbpp_prep.py` — MBPP scorer
+  (fraction of unit tests passed, -0.25 for no code block) and the converter that
+  writes verl-format MBPP parquet, with an `encounter` number per row so the noise
+  can be redrawn per pass. Run with `--env TASK=mbpp`.
 - `runpod/launch.py` + `runpod/verl_run.sh` — one-command GRPO run on a RunPod
   pod (`launch`, `watch`, `fetch`, `stop`); every run writes a `manifest.txt`
   with the repo, verl and package versions that produced it.

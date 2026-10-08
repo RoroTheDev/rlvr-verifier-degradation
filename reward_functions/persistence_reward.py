@@ -39,6 +39,27 @@ Modes (env var MIXUP_MODE):
                 consistent answer within one process. verl scores responses
                 from many Ray worker processes; hashing the task's identity
                 gives every worker the same answer independently.
+    group_resampled   Plesner et al.'s headline "group x rollout" noise: with
+                probability MIXUP_GROUP_P the whole outcome matrix of a prompt's
+                group is inverted -- every rollout's test outcomes flip at once, so
+                a rollout's reward f in [0, 1] becomes 1 - f. The coin is drawn
+                per (task, encounter): all rollouts of one prompt in one step share
+                it, and it is redrawn the next time that prompt is seen. The
+                encounter number must be in extra_info["encounter"] (see
+                data_prep/mbpp_prep.py); a missing one raises rather than silently
+                degrading to persistent noise. A format failure (negative honest
+                score, e.g. MBPP's -0.25 for "no code block") has no outcome matrix
+                and is never flipped.
+    group_persistent  Identical to group_resampled except the coin is keyed on the
+                task alone, so a flipped prompt is flipped on every encounter for
+                the whole run. Same marginal rate, same structure -- the ONLY
+                difference between the two is persistence, which is the paper's
+                H2 contrast.
+
+Noise applies to training data only: rows whose extra_info["split"] is in
+MIXUP_CLEAN_SPLITS (default validation,val,test) are always scored honestly, so
+validation accuracy is measured against the real verifier even when the training
+reward is corrupted. Rows with no split are treated as training data.
 
 Task identity: (data_source, extra_info["split"], extra_info["index"]) when
 present -- that is what verl's GSM8K/MATH preprocessing provides, and it is
@@ -47,12 +68,17 @@ resort to ground_truth. ground_truth alone is NOT a safe identity: for GSM8K it
 is just the final numeric answer, so every question answering "18" would share
 one coin and the mask would track answer value instead of task.
 
-Labels: the verifier is modelled as a BINARY classifier. The honest result from
-verl's own verifier is reduced to correct/incorrect (score >= MIXUP_CORRECT_
-THRESHOLD, default 1.0), which also handles verifiers that return dicts, use a
-+-1 scale (math_dapo), or give partial credit (code). Every mode then emits the
-same {0.0, 1.0} reward scale, so conditions stay comparable -- which matters for
-the Dr.GRPO ablation, where reward scale is not normalised away.
+Labels: in the TPR/FPR modes (resampled, persistent) the verifier is modelled as a
+BINARY classifier. The honest result from verl's own verifier is reduced to
+correct/incorrect (score >= MIXUP_CORRECT_THRESHOLD, default 1.0), which also
+handles verifiers that return dicts, use a +-1 scale (math_dapo), or give partial
+credit (code). These modes emit {0.0, 1.0}.
+The group modes need the honest reward's magnitude (a fraction of tests passed, to
+be inverted), so they always emit it on its own scale. clean mode does too when
+MIXUP_REWARD_SCALE=continuous; keep clean and noisy runs on the same scale or the
+Dr.GRPO ablation (where reward scale is not normalised away) is confounded.
+MBPP data (data_source "mbpp") is scored by reward_functions/mbpp_scoring.py;
+everything else goes to verl's default_compute_score.
 
 Return value is a dict (verl's naive reward manager accepts this and forwards
 every key as reward_extra_info):
@@ -60,9 +86,12 @@ every key as reward_extra_info):
     acc              HONEST correctness. Do not report training accuracy from
                      `score`: with a plain float return verl stores the noisy
                      score as "acc", silently measuring the corrupted signal.
-    mixup_eligible   1.0 if the task matched the targeting selector
-    mixup_covered    1.0 if the task carried noise at all (coverage draw)
-    mixup_flipped    1.0 if score != acc
+    honest_reward    the honest reward on the verifier's own scale
+    mixup_eligible   1.0 if the task matched the targeting selector (and is training data)
+    mixup_covered    1.0 if the task carried noise at all (coverage draw; for the group
+                     modes, simply eligibility)
+    mixup_flipped    1.0 if the label was inverted (TPR/FPR modes: score != acc;
+                     group modes: the group's outcome matrix was inverted)
 verl's naive reward manager is meant to forward these as reward_extra_info, but at
 the verl commit this project pins the trainer.rollout_data_dir dump only contains
 gts/input/output/score/step/uid -- they do NOT appear there, and whether they reach
@@ -71,7 +100,16 @@ authoritative record of honest correctness vs. the noisy label.
 
 Config (env vars -- verl's reward hook takes no extra kwargs beyond the fixed
 signature, so this is the config surface):
-    MIXUP_MODE               clean | resampled | persistent     (default: clean)
+    MIXUP_MODE               clean | resampled | persistent |
+                              group_resampled | group_persistent   (default: clean)
+    MIXUP_GROUP_P            group modes: P(a prompt's whole group is inverted)
+                                                                   (default: 0.0)
+    MIXUP_REWARD_SCALE       binary | continuous. continuous keeps the honest reward
+                              (e.g. fraction of tests passed) in clean mode; the group
+                              modes are always continuous; the TPR/FPR modes are always
+                              binary and raise if continuous is requested  (default: binary)
+    MIXUP_CLEAN_SPLITS       comma list of extra_info["split"] values that are never
+                              corrupted                      (default: validation,val,test)
     MIXUP_TPR                P(label=1 | honest correct)        (default: 1.0)
     MIXUP_FPR                P(label=1 | honest incorrect)      (default: 0.0)
     MIXUP_COVERAGE           fraction of eligible tasks carrying noise at all;
@@ -103,9 +141,17 @@ import hashlib
 import json
 import os
 import random
+import sys
 import time
 
 from verl.utils.reward_score import default_compute_score
+
+# verl loads this file by path (not as part of a package), so make the sibling
+# scorer importable explicitly.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import mbpp_scoring  # noqa: E402
 
 
 def _env_float(name: str, default: float) -> float:
@@ -124,6 +170,15 @@ MIXUP_CORRECT_THRESHOLD = _env_float("MIXUP_CORRECT_THRESHOLD", 1.0)
 MIXUP_TARGET_FIELD = os.environ.get("MIXUP_TARGET_FIELD") or None
 MIXUP_TARGET_OP = os.environ.get("MIXUP_TARGET_OP", "eq").strip().lower()
 MIXUP_LOG_DIR = os.environ.get("MIXUP_LOG_DIR") or None
+MIXUP_GROUP_P = _env_float("MIXUP_GROUP_P", 0.0)
+MIXUP_REWARD_SCALE = os.environ.get("MIXUP_REWARD_SCALE", "binary").strip().lower()
+MIXUP_CLEAN_SPLITS = frozenset(
+    s.strip() for s in os.environ.get("MIXUP_CLEAN_SPLITS", "validation,val,test").split(",") if s.strip()
+)
+
+_LABEL_MODES = ("resampled", "persistent")  # TPR/FPR noise on a binary label
+_GROUP_MODES = ("group_resampled", "group_persistent")  # whole-group inversion
+_ALL_MODES = ("clean",) + _LABEL_MODES + _GROUP_MODES
 
 _OPS = {
     "eq": lambda a, b: a == b,
@@ -219,46 +274,85 @@ def _log_call(record: dict) -> None:
         pass
 
 
-def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
-    # Honest ground truth, via verl's own built-in verifier for this dataset.
-    honest = default_compute_score(
+def _honest_raw(data_source, solution_str, ground_truth, extra_info, kwargs):
+    """The honest verifier's raw result: our MBPP scorer, else verl's built-in one."""
+    if data_source == "mbpp":
+        return mbpp_scoring.score(solution_str, ground_truth)
+    return default_compute_score(
         data_source=data_source,
         solution_str=solution_str,
         ground_truth=ground_truth,
         extra_info=extra_info,
         **kwargs,
     )
-    honest_score = _honest_score(honest)
-    is_correct = honest_score >= MIXUP_CORRECT_THRESHOLD
 
-    if MIXUP_MODE not in ("clean", "resampled", "persistent"):
-        raise ValueError(f"Unknown MIXUP_MODE: {MIXUP_MODE!r} (expected clean|resampled|persistent)")
+
+def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+    if MIXUP_MODE not in _ALL_MODES:
+        raise ValueError(f"Unknown MIXUP_MODE: {MIXUP_MODE!r} (expected {'|'.join(_ALL_MODES)})")
+    if MIXUP_REWARD_SCALE not in ("binary", "continuous"):
+        raise ValueError(f"Unknown MIXUP_REWARD_SCALE: {MIXUP_REWARD_SCALE!r} (expected binary|continuous)")
+    if MIXUP_MODE in _LABEL_MODES and MIXUP_REWARD_SCALE == "continuous":
+        raise ValueError("MIXUP_REWARD_SCALE=continuous is not defined for the TPR/FPR modes: they emit a binary label")
+
+    honest_score = _honest_score(_honest_raw(data_source, solution_str, ground_truth, extra_info, kwargs))
+    is_correct = honest_score >= MIXUP_CORRECT_THRESHOLD
+    continuous = MIXUP_MODE in _GROUP_MODES or MIXUP_REWARD_SCALE == "continuous"
+
+    info = extra_info if isinstance(extra_info, dict) else {}
+    split = info.get("split")
 
     eligible = False
     covered = False
+    inverted = False
     label = is_correct
+    score = honest_score if continuous else (1.0 if is_correct else 0.0)
     key = None
 
-    if MIXUP_MODE != "clean":
+    # Noise is for training data only: validation/test rows are scored honestly.
+    if MIXUP_MODE != "clean" and split not in MIXUP_CLEAN_SPLITS:
         eligible = _is_eligible(extra_info)
-        if eligible:
-            key = _task_identity(data_source, ground_truth, extra_info)
+
+    if eligible:
+        key = _task_identity(data_source, ground_truth, extra_info)
+        if MIXUP_MODE in _LABEL_MODES:
             # Coverage: only a subset of eligible tasks carry noise at all. The
             # covered *set* is deterministic (fixed by the hash), not resampled --
             # coverage is how much of the data is affected, not an extra source
             # of randomness on top of the flip itself.
             covered = _deterministic_unit_interval(key, "coverage") < MIXUP_COVERAGE
-        if covered:
-            threshold = MIXUP_TPR if is_correct else MIXUP_FPR
-            coin = _deterministic_unit_interval(key, "flip") if MIXUP_MODE == "persistent" else _rng.random()
-            label = coin < threshold
+            if covered:
+                threshold = MIXUP_TPR if is_correct else MIXUP_FPR
+                coin = _deterministic_unit_interval(key, "flip") if MIXUP_MODE == "persistent" else _rng.random()
+                label = coin < threshold
+                score = 1.0 if label else 0.0
+        else:
+            # Group modes: one coin per prompt group (per encounter, if resampled).
+            # Every rollout of the group sees the same coin because they share the
+            # row's extra_info, hence the same task identity and encounter.
+            covered = True
+            coin_key = key
+            if MIXUP_MODE == "group_resampled":
+                encounter = info.get("encounter")
+                if encounter is None:
+                    raise ValueError(
+                        "MIXUP_MODE=group_resampled needs extra_info['encounter'] "
+                        "(build the data with data_prep/mbpp_prep.py); refusing to guess"
+                    )
+                coin_key = f"{key}|encounter={encounter}"
+            # A negative honest score is a format failure: no outcome matrix, nothing to invert.
+            inverted = honest_score >= 0.0 and _deterministic_unit_interval(coin_key, "group_flip") < MIXUP_GROUP_P
+            if inverted:
+                score = 1.0 - honest_score
 
+    flipped = inverted if MIXUP_MODE in _GROUP_MODES else (label != is_correct)
     result = {
-        "score": 1.0 if label else 0.0,
+        "score": float(score),
         "acc": 1.0 if is_correct else 0.0,
+        "honest_reward": honest_score,
         "mixup_eligible": 1.0 if eligible else 0.0,
         "mixup_covered": 1.0 if covered else 0.0,
-        "mixup_flipped": 1.0 if label != is_correct else 0.0,
+        "mixup_flipped": 1.0 if flipped else 0.0,
     }
 
     if MIXUP_LOG_DIR is not None:
@@ -269,8 +363,12 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
                 "tpr": MIXUP_TPR,
                 "fpr": MIXUP_FPR,
                 "coverage": MIXUP_COVERAGE,
+                "group_p": MIXUP_GROUP_P,
+                "reward_scale": "continuous" if continuous else "binary",
                 "mask_seed": MIXUP_MASK_SEED,
                 "data_source": data_source,
+                "split": split,
+                "encounter": info.get("encounter"),
                 "task": hashlib.sha256((key or _task_identity(data_source, ground_truth, extra_info)).encode()).hexdigest()[:16],
                 "honest_score": honest_score,
                 **result,

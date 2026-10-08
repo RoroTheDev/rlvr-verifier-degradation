@@ -25,7 +25,6 @@
 # in reward_functions/persistence_reward.py.
 
 export DEBIAN_FRONTEND=noninteractive
-export WANDB_MODE=${WANDB_MODE:-disabled}
 export PATH="$HOME/.local/bin:$PATH"
 
 WORK=${WORK:-/root/work}
@@ -51,8 +50,41 @@ DUMP_ROLLOUTS=${DUMP_ROLLOUTS:-0}     # 1 => dump per-sample generations + rewar
 TQ_STORAGE_UNITS=${TQ_STORAGE_UNITS:-1}
 EPOCHS=${EPOCHS:-1}
 TRAIN_MAX_SAMPLES=${TRAIN_MAX_SAMPLES:--1}   # -1 = whole train set; set to TRAIN_BATCH with EPOCHS>1 to revisit the same tasks
+# Task / data. gsm8k = verl's stock converter (smoke tests). mbpp = the Plesner et al.
+# setting: data_prep/mbpp_prep.py writes MBPP_PASSES back-to-back passes over the 374
+# train problems (each row carries its `encounter` number, so group_resampled noise can
+# be redrawn per encounter) and verl runs with data.shuffle=False, one epoch. The pass
+# order depends on SEED, so training seeds see different data orders.
+TASK=${TASK:-gsm8k}
+MBPP_PASSES=${MBPP_PASSES:-34}          # 34 passes x 374 problems / 48 prompts per step = 264 steps
+LR=${LR:-1e-6}
+CLIP_HIGH=${CLIP_HIGH:-0.2}             # the paper uses 0.28 (clip-higher) with clip_low 0.2
+ENABLE_THINKING=${ENABLE_THINKING:-}    # empty = model default; 0/1 = Qwen3 chat-template enable_thinking
+VAL_FREQ=${VAL_FREQ:--1}                # validate every N steps; -1 = never
+VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-False}
+VAL_N=${VAL_N:-1}                       # samples per validation prompt (paper: 16)
+VAL_TEMP=${VAL_TEMP:-0}                 # paper's eval script samples at 0.7
+VAL_SAMPLE=${VAL_SAMPLE:-False}
 export MIXUP_MODE=${MIXUP_MODE:-clean}
+# Which tasks a persistent mask corrupts. Defaults to the training seed so seed-to-seed
+# spread includes which tasks were corrupted; set MIXUP_MASK_SEED to pin one mask.
+export MIXUP_MASK_SEED=${MIXUP_MASK_SEED:-$SEED}
 export MIXUP_LOG_DIR=/workspace/runs/${RUN_NAME}/mixup_logs
+
+# Weights & Biases: off by default. WANDB=1 needs WANDB_API_KEY in the pod env
+# (launch.py --wandb forwards it from your local shell; it is never written to the
+# manifest or logs). Pods are non-interactive, so this env var replaces
+# `wandb login`, and wandb is already a verl dependency (no `uv add` needed).
+# Optional: WANDB_ENTITY (team/user to log under), WANDB_PROJECT.
+WANDB=${WANDB:-0}
+WANDB_PROJECT=${WANDB_PROJECT:-rlvr-verifier-degradation}
+if [ "$WANDB" = "1" ]; then
+  export WANDB_MODE=online
+  LOGGER="[console,wandb]"
+else
+  export WANDB_MODE=disabled
+  LOGGER="[console]"
+fi
 
 # Keep every cache next to the venv, on the same local filesystem (uv hardlinks
 # from its cache into the venv; across filesystems it falls back to slow copies).
@@ -107,13 +139,38 @@ stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
   UV_RUN="uv run --frozen --all-packages --extra vllm --extra fsdp"
 
   mkdir -p reward_functions
-  cp "$WORK/team_repo/reward_functions/persistence_reward.py" reward_functions/persistence_reward.py
+  cp "$WORK/team_repo/reward_functions/persistence_reward.py" "$WORK/team_repo/reward_functions/mbpp_scoring.py" reward_functions/
 
-  if [ ! -f "$WORK/data/gsm8k/train.parquet" ]; then
-    stage DATA_PREP
-    $UV_RUN python3 examples/data_preprocess/gsm8k.py --local_save_dir "$WORK/data/gsm8k" \
-      >"$RUN_DIR/data_prep.log" 2>&1
-    echo "DATA_PREP_EXIT:$?" >> "$PROGRESS"
+  EXTRA=()
+  if [ "$TASK" = "mbpp" ]; then
+    DATA_DIR="$WORK/data/mbpp-seed${SEED}-passes${MBPP_PASSES}"
+    if [ ! -f "$DATA_DIR/train.parquet" ]; then
+      stage DATA_PREP
+      mkdir -p data_prep
+      cp "$WORK/team_repo/data_prep/mbpp_prep.py" data_prep/mbpp_prep.py
+      $UV_RUN python3 data_prep/mbpp_prep.py --out "$DATA_DIR" --epochs "$MBPP_PASSES" --order-seed "$SEED" \
+        >"$RUN_DIR/data_prep.log" 2>&1
+      echo "DATA_PREP_EXIT:$?" >> "$PROGRESS"
+      grep -E "^(train|val) rows" "$RUN_DIR/data_prep.log" >> "$PROGRESS"
+    fi
+    TRAIN_FILE="$DATA_DIR/train.parquet"
+    VAL_FILE="$DATA_DIR/val.parquet"
+    EXTRA+=("data.shuffle=False")      # the file is already in the order we want
+  else
+    DATA_DIR="$WORK/data/gsm8k"
+    if [ ! -f "$DATA_DIR/train.parquet" ]; then
+      stage DATA_PREP
+      $UV_RUN python3 examples/data_preprocess/gsm8k.py --local_save_dir "$DATA_DIR" \
+        >"$RUN_DIR/data_prep.log" 2>&1
+      echo "DATA_PREP_EXIT:$?" >> "$PROGRESS"
+    fi
+    TRAIN_FILE="$DATA_DIR/train.parquet"
+    VAL_FILE="$DATA_DIR/test.parquet"
+  fi
+  if [ "$ENABLE_THINKING" = "0" ]; then
+    EXTRA+=("+data.apply_chat_template_kwargs.enable_thinking=False")
+  elif [ "$ENABLE_THINKING" = "1" ]; then
+    EXTRA+=("+data.apply_chat_template_kwargs.enable_thinking=True")
   fi
 
   # --- provenance: enough to say exactly what produced a number ---
@@ -125,6 +182,10 @@ stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
     echo "team_repo_ref=$REPO_REF"
     echo "team_repo_sha=$(git -C "$WORK/team_repo" rev-parse HEAD)"
     echo "reward_file_sha256=$(sha256sum reward_functions/persistence_reward.py | cut -d' ' -f1)"
+    echo "mbpp_scoring_sha256=$(sha256sum reward_functions/mbpp_scoring.py | cut -d' ' -f1)"
+    echo "task=$TASK"
+    echo "train_parquet_sha256=$(sha256sum "$TRAIN_FILE" | cut -d' ' -f1)"
+    echo "val_parquet_sha256=$(sha256sum "$VAL_FILE" | cut -d' ' -f1)"
     echo "verl_ref_requested=${VERL_REF:-<latest main, unpinned>}"
     echo "verl_sha=$(git -C "$WORK/verl" rev-parse HEAD)"
     echo "verl_uv_lock_sha256=$(sha256sum uv.lock | cut -d' ' -f1)"
@@ -144,26 +205,26 @@ for p in ("torch", "vllm", "ray", "transformers", "tensordict", "flash-attn", "n
     except m.PackageNotFoundError:
         print(f"{p}=NOT_INSTALLED")
 PYEOF
-    env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=)' | sort
+    env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
   } > "$RUN_DIR/manifest.txt" 2>&1
 
   # --- train ---
-  EXTRA=()
   if [ "$DUMP_ROLLOUTS" = "1" ]; then
     EXTRA+=("trainer.rollout_data_dir=${RUN_DIR}/rollouts")
   fi
 
   stage TRAIN_START
   PYTHONUNBUFFERED=1 $UV_RUN python3 -m verl.trainer.main_ppo \
-    data.train_files="$WORK/data/gsm8k/train.parquet" \
-    data.val_files="$WORK/data/gsm8k/test.parquet" \
+    data.train_files="$TRAIN_FILE" \
+    data.val_files="$VAL_FILE" \
     data.train_batch_size="$TRAIN_BATCH" \
     data.train_max_samples="$TRAIN_MAX_SAMPLES" \
     data.max_prompt_length="$MAX_PROMPT" \
     data.max_response_length="$MAX_RESPONSE" \
     data.seed="$SEED" \
     actor_rollout_ref.model.path="$MODEL" \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr="$LR" \
+    actor_rollout_ref.actor.clip_ratio_high="$CLIP_HIGH" \
     actor_rollout_ref.actor.ppo_mini_batch_size="$MINI_BATCH" \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$MICRO_BATCH" \
     actor_rollout_ref.actor.use_kl_loss=True \
@@ -175,6 +236,9 @@ PYEOF
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM_UTIL" \
     actor_rollout_ref.rollout.n="$ROLLOUT_N" \
+    actor_rollout_ref.rollout.val_kwargs.n="$VAL_N" \
+    actor_rollout_ref.rollout.val_kwargs.temperature="$VAL_TEMP" \
+    actor_rollout_ref.rollout.val_kwargs.do_sample="$VAL_SAMPLE" \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$MICRO_BATCH" \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
@@ -183,12 +247,14 @@ PYEOF
     reward.custom_reward_function.name=compute_score \
     "ray_kwargs.ray_init.runtime_env.py_executable=${UV_RUN}" \
     trainer.critic_warmup=0 \
-    "trainer.logger=[console]" \
+    "trainer.logger=${LOGGER}" \
+    trainer.project_name="$WANDB_PROJECT" \
+    trainer.experiment_name="$RUN_NAME" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
-    trainer.test_freq=-1 \
-    trainer.val_before_train=False \
+    trainer.test_freq="$VAL_FREQ" \
+    trainer.val_before_train="$VAL_BEFORE_TRAIN" \
     trainer.total_epochs="$EPOCHS" \
     trainer.total_training_steps="$STEPS" \
     "${EXTRA[@]}" \

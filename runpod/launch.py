@@ -98,6 +98,19 @@ def cmd_launch(a):
             sys.exit(f"--env expects KEY=VALUE, got {pair!r}")
         env[k] = v
 
+    if a.wandb:
+        # The key is read from the local environment only, never from the command
+        # line, and launch.py never prints the pod's env. It does end up in the
+        # pod's env on RunPod, so use a key you can revoke.
+        key = os.environ.get("WANDB_API_KEY")
+        if not key:
+            sys.exit("--wandb needs WANDB_API_KEY set in your local shell")
+        env["WANDB"] = "1"
+        env["WANDB_API_KEY"] = key
+        for k in ("WANDB_ENTITY", "WANDB_PROJECT"):
+            if os.environ.get(k):
+                env[k] = os.environ[k]
+
     payload = {
         "name": f"verl-{a.run_name}",
         "cloudType": a.cloud,
@@ -195,6 +208,8 @@ def main():
     l.add_argument("--image", default=DEFAULT_IMAGE)
     l.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="forwarded to verl_run.sh / the reward function (repeatable)")
+    l.add_argument("--wandb", action="store_true",
+                   help="log to Weights & Biases; needs WANDB_API_KEY (and optionally WANDB_ENTITY) in your local shell")
     l.set_defaults(fn=cmd_launch)
 
     w = sub.add_parser("watch")

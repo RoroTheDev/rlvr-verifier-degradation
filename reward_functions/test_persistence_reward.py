@@ -28,6 +28,9 @@ ENV_KEYS = (
     "MIXUP_TARGET_OP",
     "MIXUP_TARGET_VALUE",
     "MIXUP_LOG_DIR",
+    "MIXUP_GROUP_P",
+    "MIXUP_REWARD_SCALE",
+    "MIXUP_CLEAN_SPLITS",
 )
 
 
@@ -132,8 +135,9 @@ class TestPersistentDeterminism(unittest.TestCase):
     def test_split_is_part_of_identity(self):
         m = _load_module({"MIXUP_MODE": "persistent", "MIXUP_TPR": "0.5", "MIXUP_FPR": "0.0"}, {})
         train = [_score(m, "x", "s", _info(i, "train")) for i in range(100)]
-        test = [_score(m, "x", "s", _info(i, "test")) for i in range(100)]
-        self.assertNotEqual(train, test, "index 7 in train and index 7 in test are different tasks")
+        # "test" is a clean split now, so use a different *noisy* split name here.
+        other = [_score(m, "x", "s", _info(i, "train_b")) for i in range(100)]
+        self.assertNotEqual(train, other, "index 7 in train and index 7 in train_b are different tasks")
 
 
 class TestMaskSeed(unittest.TestCase):
@@ -268,6 +272,180 @@ class TestCallLog(unittest.TestCase):
             m.compute_score("gsm8k", "s", "x", extra_info=_info(1))
             self.assertEqual(glob.glob(os.path.join(d, "*")), [])
             self.assertEqual(m._log_handles, {})
+
+
+class TestTrainOnlyNoise(unittest.TestCase):
+    """Validation must be measured against the real verifier even when training is corrupted."""
+
+    def test_clean_splits_are_never_corrupted_in_any_mode(self):
+        honest = {"gt-A": True, "gt-B": False}
+        modes = [
+            {"MIXUP_MODE": "resampled", "MIXUP_TPR": "0.0", "MIXUP_FPR": "1.0"},
+            {"MIXUP_MODE": "persistent", "MIXUP_TPR": "0.0", "MIXUP_FPR": "1.0"},
+            {"MIXUP_MODE": "group_resampled", "MIXUP_GROUP_P": "1.0"},
+            {"MIXUP_MODE": "group_persistent", "MIXUP_GROUP_P": "1.0"},
+        ]
+        for env in modes:
+            m = _load_module(env, honest)
+            for split in ("validation", "val", "test"):
+                info = {"split": split, "index": 1, "encounter": 0}
+                a = m.compute_score("gsm8k", "s", "gt-A", extra_info=info)
+                b = m.compute_score("gsm8k", "s", "gt-B", extra_info=info)
+                self.assertEqual((a["score"], b["score"]), (1.0, 0.0), (env, split))
+                for r in (a, b):
+                    self.assertEqual((r["mixup_eligible"], r["mixup_covered"], r["mixup_flipped"]), (0.0, 0.0, 0.0))
+            train = m.compute_score("gsm8k", "s", "gt-A", extra_info={"split": "train", "index": 1, "encounter": 0})
+            self.assertEqual(train["score"], 0.0, f"{env}: the same row is corrupted when it is training data")
+
+    def test_missing_split_is_treated_as_training_data(self):
+        m = _load_module({"MIXUP_MODE": "persistent", "MIXUP_TPR": "0.0", "MIXUP_FPR": "1.0"}, {"gt-A": True})
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"index": 1})["score"], 0.0)
+
+    def test_clean_splits_are_configurable(self):
+        m = _load_module(
+            {"MIXUP_MODE": "persistent", "MIXUP_TPR": "0.0", "MIXUP_FPR": "1.0", "MIXUP_CLEAN_SPLITS": "holdout"},
+            {"gt-A": True},
+        )
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info=_info(1, "holdout"))["score"], 1.0)
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info=_info(1, "test"))["score"], 0.0)
+
+
+def _g(m, task, encounter, gt="gt", split="train", solution="s", **extra):
+    info = {"split": split, "index": task, "encounter": encounter}
+    info.update(extra)
+    return m.compute_score("gsm8k", solution, gt, extra_info=info)
+
+
+def _group_env(mode, p, **more):
+    env = {"MIXUP_MODE": mode, "MIXUP_GROUP_P": str(p)}
+    env.update(more)
+    return env
+
+
+class TestGroupNoise(unittest.TestCase):
+    def test_p1_inverts_the_reward_and_p0_leaves_it(self):
+        honest = {"hi": 1.0, "lo": 0.0, "mid": 0.75}
+        for mode in ("group_resampled", "group_persistent"):
+            m = _load_module(_group_env(mode, 1.0), honest)
+            self.assertEqual([_g(m, 1, 0, gt)["score"] for gt in ("hi", "lo", "mid")], [0.0, 1.0, 0.25])
+            m = _load_module(_group_env(mode, 0.0), honest)
+            r = _g(m, 1, 0, "mid")
+            self.assertEqual((r["score"], r["mixup_flipped"]), (0.75, 0.0))
+
+    def test_format_failure_is_never_inverted(self):
+        for mode in ("group_resampled", "group_persistent"):
+            m = _load_module(_group_env(mode, 1.0), {"nocode": -0.25})
+            r = _g(m, 1, 0, "nocode")
+            self.assertEqual((r["score"], r["mixup_flipped"]), (-0.25, 0.0))
+
+    def test_acc_stays_honest_when_the_group_is_inverted(self):
+        m = _load_module(_group_env("group_persistent", 1.0), {"hi": 1.0, "lo": 0.0})
+        hi, lo = _g(m, 1, 0, "hi"), _g(m, 1, 0, "lo")
+        self.assertEqual((hi["score"], hi["acc"], hi["honest_reward"]), (0.0, 1.0, 1.0))
+        self.assertEqual((lo["score"], lo["acc"], lo["honest_reward"]), (1.0, 0.0, 0.0))
+
+    def test_every_rollout_of_a_group_shares_one_coin(self):
+        """Different rollouts of one prompt have different honest rewards but must be
+        inverted together or not at all -- that is what 'whole matrix' means."""
+        honest = {"a": 1.0, "b": 0.0, "c": 0.5, "d": 0.25}
+        for mode in ("group_resampled", "group_persistent"):
+            m = _load_module(_group_env(mode, 0.5), honest)
+            seen = set()
+            for task in range(300):
+                # Real rollouts of a prompt have different text; the coin must not depend on it.
+                flags = {_g(m, task, 3, gt, solution=f"rollout text for {gt}")["mixup_flipped"] for gt in honest}
+                self.assertEqual(len(flags), 1, f"{mode}: task {task} was inverted for only some rollouts")
+                seen |= flags
+            self.assertEqual(seen, {0.0, 1.0})
+
+    def test_marginal_rate_matches_p_in_both_modes(self):
+        for mode in ("group_resampled", "group_persistent"):
+            m = _load_module(_group_env(mode, 0.15), {})
+            rate = sum(_g(m, t, 0)["mixup_flipped"] for t in range(4000)) / 4000
+            self.assertTrue(0.12 < rate < 0.18, f"{mode}: flip rate {rate}")
+
+    def test_group_resampled_is_deterministic_per_task_and_encounter(self):
+        env = _group_env("group_resampled", 0.5)
+        m = _load_module(env, {})
+        first = [_g(m, t, 2)["mixup_flipped"] for t in range(200)]
+        m = _load_module(env, {})  # fresh import = another Ray worker
+        self.assertEqual(first, [_g(m, t, 2)["mixup_flipped"] for t in range(200)])
+
+    def test_group_resampled_redraws_on_every_encounter(self):
+        m = _load_module(_group_env("group_resampled", 0.5), {})
+        e0 = [_g(m, t, 0)["mixup_flipped"] for t in range(400)]
+        e1 = [_g(m, t, 1)["mixup_flipped"] for t in range(400)]
+        differ = sum(a != b for a, b in zip(e0, e1)) / 400
+        self.assertTrue(0.35 < differ < 0.65, f"encounters look correlated: {differ}")
+        per_task = [{_g(m, t, k)["mixup_flipped"] for k in range(10)} for t in range(50)]
+        self.assertGreater(sum(len(s) == 2 for s in per_task), 40, "a task should flip on some encounters, not others")
+
+    def test_group_persistent_is_identical_on_every_encounter(self):
+        """The persistence requirement, for the group form: epoch 1 == epoch 10."""
+        env = _group_env("group_persistent", 0.5)
+        m = _load_module(env, {})
+        first = [_g(m, t, 0)["mixup_flipped"] for t in range(200)]
+        for encounter in range(1, 10):
+            self.assertEqual(first, [_g(m, t, encounter)["mixup_flipped"] for t in range(200)])
+        m = _load_module(env, {})
+        self.assertEqual(first, [_g(m, t, 0)["mixup_flipped"] for t in range(200)])
+
+    def test_group_persistent_needs_no_encounter_but_resampled_refuses_without_one(self):
+        m = _load_module(_group_env("group_persistent", 0.5), {})
+        m.compute_score("gsm8k", "s", "gt", extra_info={"split": "train", "index": 1})
+        m = _load_module(_group_env("group_resampled", 0.5), {})
+        with self.assertRaises(ValueError):
+            m.compute_score("gsm8k", "s", "gt", extra_info={"split": "train", "index": 1})
+
+    def test_mask_seed_changes_the_persistent_mask(self):
+        def mask(seed):
+            m = _load_module(_group_env("group_persistent", 0.5, MIXUP_MASK_SEED=str(seed)), {})
+            return [_g(m, t, 0)["mixup_flipped"] for t in range(200)]
+
+        self.assertEqual(mask(3), mask(3))
+        self.assertNotEqual(mask(3), mask(4))
+
+    def test_targeting_still_gates_group_noise(self):
+        env = _group_env("group_persistent", 1.0, MIXUP_TARGET_FIELD="difficulty", MIXUP_TARGET_VALUE="hard")
+        m = _load_module(env, {"hi": 1.0})
+        self.assertEqual(_g(m, 1, 0, "hi", difficulty="easy")["score"], 1.0)
+        self.assertEqual(_g(m, 1, 0, "hi", difficulty="hard")["score"], 0.0)
+
+
+class TestRewardScale(unittest.TestCase):
+    def test_clean_continuous_keeps_partial_credit_and_binary_stays_the_default(self):
+        m = _load_module({"MIXUP_MODE": "clean", "MIXUP_REWARD_SCALE": "continuous"}, {"half": 0.5})
+        self.assertEqual(m.compute_score("gsm8k", "s", "half")["score"], 0.5)
+        m = _load_module({"MIXUP_MODE": "clean"}, {"half": 0.5})
+        self.assertEqual(m.compute_score("gsm8k", "s", "half")["score"], 0.0)
+
+    def test_continuous_is_refused_for_the_binary_label_modes(self):
+        m = _load_module({"MIXUP_MODE": "persistent", "MIXUP_REWARD_SCALE": "continuous"}, {})
+        with self.assertRaises(ValueError):
+            m.compute_score("gsm8k", "s", "x", extra_info=_info(1))
+
+    def test_unknown_scale_raises(self):
+        m = _load_module({"MIXUP_MODE": "clean", "MIXUP_REWARD_SCALE": "bogus"}, {})
+        with self.assertRaises(ValueError):
+            m.compute_score("gsm8k", "s", "x")
+
+
+class TestMbppDispatch(unittest.TestCase):
+    GT = json.dumps({"tests": ["assert add(1, 2) == 3", "assert add(2, 2) == 4"], "setup": ""})
+
+    def test_mbpp_is_scored_by_our_scorer_not_verls_default(self):
+        # The fake default scorer calls everything correct (1.0); only our own
+        # scorer can return 0.0 for a wrong program.
+        m = _load_module({"MIXUP_MODE": "clean", "MIXUP_REWARD_SCALE": "continuous"}, {})
+        wrong = m.compute_score("mbpp", "```python\ndef add(a, b):\n    return 0\n```", self.GT, extra_info=_info(1))
+        right = m.compute_score("mbpp", "```python\ndef add(a, b):\n    return a + b\n```", self.GT, extra_info=_info(1))
+        self.assertEqual((wrong["honest_reward"], wrong["acc"]), (0.0, 0.0))
+        self.assertEqual((right["honest_reward"], right["acc"]), (1.0, 1.0))
+
+    def test_group_flip_on_a_real_mbpp_response(self):
+        m = _load_module(_group_env("group_persistent", 1.0), {})
+        r = m.compute_score("mbpp", "```python\ndef add(a, b):\n    return a + b\n```", self.GT, extra_info=_info(1))
+        self.assertEqual((r["score"], r["acc"], r["mixup_flipped"]), (0.0, 1.0, 1.0))
 
 
 if __name__ == "__main__":
