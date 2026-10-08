@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
-import re
+from json import dumps
+from re import sub
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from datasets import load_dataset
-from datasketch import MinHash, MinHashLSH
+from datasketch import MinHash
 from tqdm import tqdm
 
 MATH500_DATASET = "HuggingFaceH4/MATH-500"
@@ -22,20 +22,24 @@ def normalize(text: str) -> str:
     text = text.lower()
     text = text.replace(r"\left(", "(").replace(r"\right)", ")")
     text = text.replace(r"\:", "").replace(r"\,", "")
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s*([+\-*/=(){}\[\]<>])\s*", r"\1", text)
+    text = sub(r"\s+", " ", text)
+    text = sub(r"\s*([+\-*/=(){}\[\]<>])\s*", r"\1", text)
     return text.strip()
+
+
+def _shingles(text: str, ngram_size: int = 5) -> set[str]:
+    tokens = text.split()
+    if len(tokens) < ngram_size:
+        return set(tokens)
+    return {
+        " ".join(tokens[i : i + ngram_size])
+        for i in range(len(tokens) - ngram_size + 1)
+    }
 
 
 def minhash(text: str, num_perm: int = 128, ngram_size: int = 5) -> MinHash:
     signature = MinHash(num_perm=num_perm)
-    tokens = text.split()
-    shingles = (
-        tokens
-        if len(tokens) < ngram_size
-        else (" ".join(tokens[i : i + ngram_size]) for i in range(len(tokens) - ngram_size + 1))
-    )
-    for shingle in shingles:
+    for shingle in _shingles(text, ngram_size):
         signature.update(shingle.encode("utf-8"))
     return signature
 
@@ -97,6 +101,11 @@ def run(
     gsm8k: object | None = None,
 ) -> None:
     """Run decontamination, optionally using in-memory datasets for testing."""
+    if not 0 <= threshold <= 1:
+        raise ValueError("threshold must be between 0 and 1")
+    if qwen_limit is not None and qwen_limit < 0:
+        raise ValueError("qwen_limit must be non-negative")
+
     if math500 is None:
         print("Loading MATH-500 test split...")
         math500 = load_dataset(MATH500_DATASET, split="test")
@@ -106,14 +115,18 @@ def run(
 
     exact: set[str] = set()
     references: list[str] = []
-    index = MinHashLSH(threshold=threshold, num_perm=128)
+    reference_shingles: list[set[str]] = []
+    shingle_to_references: dict[str, set[int]] = {}
 
     for i, row in enumerate(math500):
         problem = row["problem"]
         normalized = normalize(problem)
         exact.add(normalized)
         references.append(problem)
-        index.insert(str(i), minhash(normalized))
+        shingles = _shingles(normalized)
+        reference_shingles.append(shingles)
+        for shingle in shingles:
+            shingle_to_references.setdefault(shingle, set()).add(i)
 
     judge = QwenJudge(DEFAULT_QWEN_MODEL) if use_qwen else None
     clean: list[dict] = []
@@ -130,8 +143,26 @@ def run(
             removed_exact += 1
             continue
 
-        candidate_ids = index.query(minhash(normalized))
-        if candidate_ids:
+        candidate_shingles = _shingles(normalized)
+        if threshold == 0:
+            candidate_ids = range(len(references))
+        elif candidate_shingles:
+            candidate_ids = set().union(
+                *(shingle_to_references.get(shingle, set()) for shingle in candidate_shingles)
+            )
+        else:
+            candidate_ids = set()
+
+        fuzzy_match = False
+        for candidate_id in candidate_ids:
+            reference = reference_shingles[candidate_id]
+            intersection_size = len(candidate_shingles & reference)
+            union_size = len(candidate_shingles) + len(reference) - intersection_size
+            if union_size and intersection_size / union_size >= threshold:
+                fuzzy_match = True
+                break
+
+        if fuzzy_match:
             removed_fuzzy += 1
             continue
 
@@ -155,7 +186,7 @@ def run(
     output_path = output_path_dir / "clean_gsm8k_train.jsonl"
     with output_path.open("w", encoding="utf-8") as stream:
         for row in clean:
-            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+            stream.write(dumps(row, ensure_ascii=False) + "\n")
 
     report = {
         "candidate": f"{GSM8K_DATASET}:main/train",
@@ -164,7 +195,10 @@ def run(
         "removed_exact": removed_exact,
         "removed_fuzzy": removed_fuzzy,
         "removed_qwen": removed_qwen,
+        "removed_total": removed_exact + removed_fuzzy + removed_qwen,
         "clean": len(clean),
+        "fuzzy_method": "exact Jaccard similarity over 5-token shingles",
+        "fuzzy_threshold": threshold,
         "qwen_enabled": use_qwen,
         "qwen_model": DEFAULT_QWEN_MODEL if use_qwen else None,
         "qwen_caveat": (
@@ -173,7 +207,7 @@ def run(
         ),
     }
     (output_path_dir / "report.json").write_text(
-        json.dumps(report, indent=2),
+        dumps(report, indent=2),
         encoding="utf-8",
     )
 
