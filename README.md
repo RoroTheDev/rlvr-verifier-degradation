@@ -24,7 +24,7 @@ Run the GSM8K/MATH-500 pipeline:
 
 ```bash
 python -m decontamination_pipeline.decontamination_pipeline \
-  --output-dir results/gsm8k_math500 \
+  --output-dir decontamination_pipeline/artifacts \
   --threshold 0.80
 ```
 
@@ -32,8 +32,33 @@ The pipeline treats MATH-500 `test` as the reference set and GSM8K `train` as
 the candidate set to clean. It removes exact normalized question matches and
 all candidates whose 5-token-shingle Jaccard similarity meets the configured
 threshold. The similarity check is exact (not a probabilistic LSH lookup). It
-writes the remaining GSM8K training rows to `clean_gsm8k_train.jsonl` and
-counts removed and retained rows in `report.json`.
+writes the following handoff artifacts into the selected output directory:
+
+- `clean_gsm8k_train.jsonl`: retained GSM8K rows with original fields and values.
+- `math500_test.jsonl`: the complete, unmodified 500-example evaluation split.
+- `report.json`: machine-readable removal and retention counts.
+- `decontamination_report.md`: an English Week 1 report documenting the method,
+  observed counts, prompt handling, limitations, and unverified paper deviations.
+
+Official source loads must contain 7,473 training and 500 evaluation examples;
+otherwise the pipeline stops before exporting artifacts. Screening concerns
+question text, not solutions or model pretraining data, and does not guarantee
+semantic decontamination or out-of-distribution evaluation.
+
+Load the delivered data directly for modeling (the two splits have different
+schemas: GSM8K uses `question`/`answer`; MATH-500 uses `problem`/`solution` and
+additional benchmark fields):
+
+```python
+from datasets import DatasetDict, load_dataset
+
+splits = DatasetDict({
+    "train": load_dataset("json", split="train", data_files=
+                          "decontamination_pipeline/artifacts/clean_gsm8k_train.jsonl"),
+    "test": load_dataset("json", split="train", data_files=
+                         "decontamination_pipeline/artifacts/math500_test.jsonl"),
+})
+```
 
 Qwen is optional:
 
