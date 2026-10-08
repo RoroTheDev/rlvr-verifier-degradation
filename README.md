@@ -28,9 +28,12 @@ python -m decontamination_pipeline.decontamination_pipeline \
   --threshold 0.80
 ```
 
-The pipeline performs exact matching and MinHash/LSH near-duplicate matching.
-It writes `clean_gsm8k_train.jsonl` and `report.json` to the selected output
-directory.
+The pipeline treats MATH-500 `test` as the reference set and GSM8K `train` as
+the candidate set to clean. It removes exact normalized question matches and
+all candidates whose 5-token-shingle Jaccard similarity meets the configured
+threshold. The similarity check is exact (not a probabilistic LSH lookup). It
+writes the remaining GSM8K training rows to `clean_gsm8k_train.jsonl` and
+counts removed and retained rows in `report.json`.
 
 Qwen is optional:
 
