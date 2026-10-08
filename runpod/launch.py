@@ -98,17 +98,20 @@ def cmd_launch(a):
             sys.exit(f"--env expects KEY=VALUE, got {pair!r}")
         env[k] = v
 
-    if a.wandb:
+    # Every run logs to Weights & Biases when WANDB_API_KEY is available locally
+    # (more runs, more data); --no-wandb opts out, --wandb makes a missing key an error.
+    key = os.environ.get("WANDB_API_KEY")
+    use_wandb = a.wandb if a.wandb is not None else bool(key)
+    if use_wandb:
         # The key is read from the local environment only, never from the command
         # line, and launch.py never prints the pod's env. It does end up in the
         # pod's env on RunPod, so use a key you can revoke.
-        key = os.environ.get("WANDB_API_KEY")
         if not key:
             sys.exit("--wandb needs WANDB_API_KEY set in your local shell")
         env["WANDB"] = "1"
         env["WANDB_API_KEY"] = key
-        for k in ("WANDB_ENTITY", "WANDB_PROJECT"):
-            if os.environ.get(k):
+        for k in ("WANDB_ENTITY", "WANDB_PROJECT", "WANDB_RUN_GROUP", "WANDB_TAGS"):
+            if os.environ.get(k) and k not in env:
                 env[k] = os.environ[k]
 
     payload = {
@@ -123,6 +126,10 @@ def cmd_launch(a):
         "env": env,
         "interruptible": False,
     }
+    if a.cuda_versions:
+        # verl's torch wheels are built for CUDA 13 and need NVIDIA driver >= 580. Pods on
+        # older hosts boot fine and nvidia-smi works, but torch then sees zero GPUs.
+        payload["allowedCudaVersions"] = [v.strip() for v in a.cuda_versions.split(",") if v.strip()]
     if a.volume_id:
         if not a.dc:
             sys.exit("--volume-id requires --dc (the volume's data center)")
@@ -139,6 +146,7 @@ def cmd_launch(a):
         "costPerHr": pod.get("costPerHr"),
         "machine": pod.get("machine", {}).get("dataCenterId") or pod.get("machine", {}).get("location"),
         "gpu": pod.get("machine", {}).get("gpuTypeId"),
+        "wandb": use_wandb,
         "progress": _proxy(pod["id"], f"runs/{a.run_name}/progress.txt"),
     }, indent=2))
 
@@ -206,10 +214,13 @@ def main():
     l.add_argument("--volume-gb", type=int, default=30, help="size of /workspace (outputs only; the env lives on container disk)")
     l.add_argument("--container-disk", type=int, default=80, help="local disk holding verl, its venv and caches")
     l.add_argument("--image", default=DEFAULT_IMAGE)
+    l.add_argument("--cuda-versions", default="13.0",
+                   help="only schedule on hosts offering these CUDA versions (13.0 = driver >= 580, the API's highest value); '' disables the filter")
     l.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="forwarded to verl_run.sh / the reward function (repeatable)")
-    l.add_argument("--wandb", action="store_true",
-                   help="log to Weights & Biases; needs WANDB_API_KEY (and optionally WANDB_ENTITY) in your local shell")
+    l.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=None,
+                   help="log to Weights & Biases (default: on whenever WANDB_API_KEY is set locally; "
+                        "optional WANDB_ENTITY / WANDB_RUN_GROUP / WANDB_TAGS are forwarded too)")
     l.set_defaults(fn=cmd_launch)
 
     w = sub.add_parser("watch")

@@ -178,6 +178,9 @@ stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
   {
     echo "date_utc=$(date -u +%FT%TZ)"
     echo "run_name=$RUN_NAME"
+    # This script is passed to the pod as an argument, not cloned, so record what ran.
+    # Compare with: git show <commit>:runpod/verl_run.sh | sha256sum
+    echo "runner_script_sha256=$(printf '%s' "$BASH_EXECUTION_STRING" | sha256sum | cut -d' ' -f1)"
     echo "team_repo_url=$REPO_URL"
     echo "team_repo_ref=$REPO_REF"
     echo "team_repo_sha=$(git -C "$WORK/team_repo" rev-parse HEAD)"
@@ -205,12 +208,22 @@ for p in ("torch", "vllm", "ray", "transformers", "tensordict", "flash-attn", "n
     except m.PackageNotFoundError:
         print(f"{p}=NOT_INSTALLED")
 PYEOF
-    env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
+    env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|WANDB_RUN_GROUP=|WANDB_TAGS=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
   } > "$RUN_DIR/manifest.txt" 2>&1
 
   # --- train ---
   if [ "$DUMP_ROLLOUTS" = "1" ]; then
     EXTRA+=("trainer.rollout_data_dir=${RUN_DIR}/rollouts")
+  fi
+
+  # Fail in seconds, with the reason, if torch cannot see the GPU (typically a host whose
+  # NVIDIA driver is too old for the CUDA 13 wheels) instead of dying a minute into training.
+  if ! "$WORK/verl/.venv/bin/python" -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 3)" \
+      >"$RUN_DIR/cuda_check.log" 2>&1; then
+    echo "CUDA_UNAVAILABLE: driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1); torch cannot use the GPU (needs driver >= 580). Terminate this pod and relaunch." >> "$PROGRESS"
+    echo "STAGE:DONE exit=3 $(date -u +%FT%TZ)" >> "$PROGRESS"
+    sleep 600   # keep the pod (and its progress file) reachable briefly; launch.py stop ends it
+    exit 3
   fi
 
   stage TRAIN_START
@@ -261,6 +274,8 @@ PYEOF
     > "$RUN_DIR/train_log.txt" 2>&1
   TRAIN_EXIT=$?
   echo "TRAIN_EXIT:${TRAIN_EXIT}" >> "$RUN_DIR/train_log.txt"
+  WANDB_URL=$(grep -o -E 'https://wandb\.ai/[A-Za-z0-9_./-]+/runs/[A-Za-z0-9]+' "$RUN_DIR/train_log.txt" | head -1)
+  [ -n "$WANDB_URL" ] && echo "WANDB_URL:${WANDB_URL}" >> "$PROGRESS"
   echo "STAGE:DONE exit=${TRAIN_EXIT} $(date -u +%FT%TZ)" >> "$PROGRESS"
 } &
 wait
