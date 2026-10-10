@@ -68,7 +68,19 @@ implementation for the confusion-matrix noise formula that was ported.
 - `reward_functions/mbpp_scoring.py` + `data_prep/mbpp_prep.py` — MBPP scorer
   (fraction of unit tests passed, -0.25 for no code block) and the converter that
   writes verl-format MBPP parquet, with an `encounter` number per row so the noise
-  can be redrawn per pass. Run with `--env TASK=mbpp`.
+  can be redrawn per pass. `--env TASK=mbpp` is a preset matching Plesner et al.
+  (arXiv 2604.07666 v2, Table 3): 48 prompts x 16 rollouts, lr 1e-6, clip 0.2/0.28,
+  no KL, per-response token-mean loss, Adam wd 0.1 / beta2 0.98, 8 optimizer updates
+  per step, 260 steps with validation every 20 (the paper's late evals are steps
+  240/260 in verl numbering). Anything passed with `--env` overrides the preset, and
+  `manifest.txt` records the effective value of every knob. `--buckets file.csv`
+  (task_id plus any columns) adds labels to `extra_info` so noise can be targeted
+  with `MIXUP_TARGET_FIELD/OP/VALUE`.
+- `analysis/run_metrics.py` — per-step and per-validation-round metrics from a run's
+  `mixup_logs/` (honest pass@1 / pass@k, within-group reward variance, the GRPO
+  advantage denominator, zero-variance group fractions, inversion rate, per-bucket
+  rows). On a real run its `noisy_reward` equals verl's own `critic/score/mean`.
+  Tests: `python analysis/test_run_metrics.py`.
 - `runpod/launch.py` + `runpod/verl_run.sh` — one-command GRPO run on a RunPod
   pod (`launch`, `watch`, `fetch`, `stop`); every run writes a `manifest.txt`
   with the repo, verl and package versions that produced it.

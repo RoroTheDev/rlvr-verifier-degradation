@@ -32,6 +32,23 @@ REPO_URL=${REPO_URL:-https://github.com/RoroTheDev/rlvr-verifier-degradation}
 REPO_REF=${REPO_REF:-main}            # branch, tag or commit of this repo; pin a tag for real runs
 VERL_REF=${VERL_REF:-}                # verl commit to install; EMPTY MEANS LATEST MAIN -- pin it for real runs
 RUN_NAME=${RUN_NAME:-run}
+TASK=${TASK:-gsm8k}
+# TASK=mbpp is a preset for the Plesner et al. replication (arXiv 2604.07666v2, Table 3 and
+# Appendix A): 48 prompts x 16 rollouts per step, lr 1e-6 (Adam, wd 0.1, betas 0.9/0.98),
+# clip 0.20/0.28, no KL term, per-response token-mean loss, 4096-token training responses,
+# evaluation every 20 steps with 16 samples at T=0.7 (the paper's late evals are at steps
+# 239 and 259, i.e. verl steps 240 and 260). MINI_BATCH=6 prompts => 96 samples per
+# optimizer update => 8 updates per step; the paper's "global batch size 96" implies this
+# but does not state it. Anything passed in the environment wins over the preset.
+if [ "$TASK" = "mbpp" ]; then
+  : "${STEPS:=260}" "${TRAIN_BATCH:=48}" "${MINI_BATCH:=6}" "${MICRO_BATCH:=4}" "${ROLLOUT_N:=16}" "${MAX_RESPONSE:=4096}"
+  : "${CLIP_HIGH:=0.28}" "${VAL_FREQ:=20}" "${VAL_N:=16}" "${VAL_TEMP:=0.7}" "${VAL_SAMPLE:=True}"
+  : "${LOSS_AGG:=seq-mean-token-mean}" "${USE_KL:=False}" "${WEIGHT_DECAY:=0.1}" "${ADAM_BETA2:=0.98}"
+fi
+USE_KL=${USE_KL:-True}                # gsm8k smoke default (KL coef 0.001); the mbpp preset turns it off
+LOSS_AGG=${LOSS_AGG:-}                # empty = verl default (token-mean)
+WEIGHT_DECAY=${WEIGHT_DECAY:-}        # empty = verl default (0.01)
+ADAM_BETA2=${ADAM_BETA2:-}            # empty = verl default (0.999)
 MODEL=${MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
 SEED=${SEED:-42}                      # training seed: data order, rollout sampling, loader
 STEPS=${STEPS:-2}
@@ -167,6 +184,9 @@ stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
     TRAIN_FILE="$DATA_DIR/train.parquet"
     VAL_FILE="$DATA_DIR/test.parquet"
   fi
+  [ -n "$LOSS_AGG" ] && EXTRA+=("actor_rollout_ref.actor.loss_agg_mode=$LOSS_AGG")
+  [ -n "$WEIGHT_DECAY" ] && EXTRA+=("actor_rollout_ref.actor.optim.weight_decay=$WEIGHT_DECAY")
+  [ -n "$ADAM_BETA2" ] && EXTRA+=("actor_rollout_ref.actor.optim.betas=[0.9,$ADAM_BETA2]")
   if [ "$ENABLE_THINKING" = "0" ]; then
     EXTRA+=("+data.apply_chat_template_kwargs.enable_thinking=False")
   elif [ "$ENABLE_THINKING" = "1" ]; then
@@ -208,6 +228,13 @@ for p in ("torch", "vllm", "ray", "transformers", "tensordict", "flash-attn", "n
     except m.PackageNotFoundError:
         print(f"{p}=NOT_INSTALLED")
 PYEOF
+    # The effective value of every knob, including defaults and preset values (the env
+    # listing below only shows what was passed in from outside).
+    for v in TASK MODEL SEED STEPS EPOCHS MBPP_PASSES TRAIN_BATCH MINI_BATCH MICRO_BATCH ROLLOUT_N MAX_PROMPT MAX_RESPONSE \
+             GPU_MEM_UTIL LR CLIP_HIGH USE_KL LOSS_AGG WEIGHT_DECAY ADAM_BETA2 ENABLE_THINKING VAL_FREQ VAL_N VAL_TEMP \
+             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS; do
+      echo "cfg_$v=${!v}"
+    done
     env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|WANDB_RUN_GROUP=|WANDB_TAGS=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
   } > "$RUN_DIR/manifest.txt" 2>&1
 
@@ -240,7 +267,7 @@ PYEOF
     actor_rollout_ref.actor.clip_ratio_high="$CLIP_HIGH" \
     actor_rollout_ref.actor.ppo_mini_batch_size="$MINI_BATCH" \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$MICRO_BATCH" \
-    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.use_kl_loss="$USE_KL" \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.data_loader_seed="$SEED" \
     actor_rollout_ref.rollout.name=vllm \

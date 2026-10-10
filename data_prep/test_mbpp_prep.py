@@ -67,6 +67,33 @@ class TestRows(unittest.TestCase):
         ])
 
 
+class TestBuckets(unittest.TestCase):
+    def _csv(self, text):
+        import tempfile
+
+        f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8", newline="")
+        f.write(text)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_csv_columns_become_typed_extra_info_fields(self):
+        b = p.load_buckets(self._csv("task_id,bucket,difficulty,leaky\n11,hard,0.75,1\n12,easy,0.2,0\n"))
+        self.assertEqual(b[11], {"bucket": "hard", "difficulty": 0.75, "leaky": 1})
+        self.assertEqual(b[12]["bucket"], "easy")
+
+    def test_rows_carry_the_bucket_but_it_cannot_overwrite_core_fields(self):
+        row = p.make_row(item(5), "train", 2, {"bucket": "hard", "split": "evil", "index": 999, "encounter": 77})
+        self.assertEqual(row["extra_info"], {"split": "train", "index": 5, "encounter": 2, "bucket": "hard"})
+
+    def test_build_rows_applies_buckets_to_train_and_validation_and_skips_unlabelled(self):
+        train, val = p.build_rows([item(1), item(2)], [item(10)], epochs=2, order_seed=0, buckets={1: {"bucket": "hard"}, 10: {"bucket": "easy"}})
+        t = {(r["extra_info"]["index"], r["extra_info"]["encounter"]): r["extra_info"].get("bucket") for r in train}
+        self.assertEqual({k: v for k, v in t.items() if k[0] == 1}, {(1, 0): "hard", (1, 1): "hard"})
+        self.assertEqual({k: v for k, v in t.items() if k[0] == 2}, {(2, 0): None, (2, 1): None})
+        self.assertEqual(val[0]["extra_info"]["bucket"], "easy")
+
+
 class TestEpochOrder(unittest.TestCase):
     def test_every_pass_is_a_permutation_with_its_own_encounter_number(self):
         ids = list(range(1, 375))

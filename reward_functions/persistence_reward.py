@@ -368,6 +368,7 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
                 "mask_seed": MIXUP_MASK_SEED,
                 "data_source": data_source,
                 "split": split,
+                "index": info.get("index"),
                 "encounter": info.get("encounter"),
                 "task": hashlib.sha256((key or _task_identity(data_source, ground_truth, extra_info)).encode()).hexdigest()[:16],
                 "honest_score": honest_score,
