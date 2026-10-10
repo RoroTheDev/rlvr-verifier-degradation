@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
-import re
+from json import dumps
+from re import sub
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from datasets import load_dataset
-from datasketch import MinHash, MinHashLSH
+from datasketch import MinHash
 from tqdm import tqdm
 
 MATH500_DATASET = "HuggingFaceH4/MATH-500"
@@ -22,20 +22,24 @@ def normalize(text: str) -> str:
     text = text.lower()
     text = text.replace(r"\left(", "(").replace(r"\right)", ")")
     text = text.replace(r"\:", "").replace(r"\,", "")
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s*([+\-*/=(){}\[\]<>])\s*", r"\1", text)
+    text = sub(r"\s+", " ", text)
+    text = sub(r"\s*([+\-*/=(){}\[\]<>])\s*", r"\1", text)
     return text.strip()
+
+
+def _shingles(text: str, ngram_size: int = 5) -> set[str]:
+    tokens = text.split()
+    if len(tokens) < ngram_size:
+        return set(tokens)
+    return {
+        " ".join(tokens[i : i + ngram_size])
+        for i in range(len(tokens) - ngram_size + 1)
+    }
 
 
 def minhash(text: str, num_perm: int = 128, ngram_size: int = 5) -> MinHash:
     signature = MinHash(num_perm=num_perm)
-    tokens = text.split()
-    shingles = (
-        tokens
-        if len(tokens) < ngram_size
-        else (" ".join(tokens[i : i + ngram_size]) for i in range(len(tokens) - ngram_size + 1))
-    )
-    for shingle in shingles:
+    for shingle in _shingles(text, ngram_size):
         signature.update(shingle.encode("utf-8"))
     return signature
 
@@ -97,23 +101,36 @@ def run(
     gsm8k: object | None = None,
 ) -> None:
     """Run decontamination, optionally using in-memory datasets for testing."""
+    if not 0 <= threshold <= 1:
+        raise ValueError("threshold must be between 0 and 1")
+    if qwen_limit is not None and qwen_limit < 0:
+        raise ValueError("qwen_limit must be non-negative")
+
     if math500 is None:
         print("Loading MATH-500 test split...")
         math500 = load_dataset(MATH500_DATASET, split="test")
+        if len(math500) != 500:
+            raise ValueError("Expected exactly 500 MATH-500 test examples")
     if gsm8k is None:
         print("Loading GSM8K train split...")
         gsm8k = load_dataset(GSM8K_DATASET, "main", split="train")
+        if len(gsm8k) != 7473:
+            raise ValueError("Expected exactly 7473 GSM8K training examples")
 
     exact: set[str] = set()
     references: list[str] = []
-    index = MinHashLSH(threshold=threshold, num_perm=128)
+    reference_shingles: list[set[str]] = []
+    shingle_to_references: dict[str, set[int]] = {}
 
     for i, row in enumerate(math500):
         problem = row["problem"]
         normalized = normalize(problem)
         exact.add(normalized)
         references.append(problem)
-        index.insert(str(i), minhash(normalized))
+        shingles = _shingles(normalized)
+        reference_shingles.append(shingles)
+        for shingle in shingles:
+            shingle_to_references.setdefault(shingle, set()).add(i)
 
     judge = QwenJudge(DEFAULT_QWEN_MODEL) if use_qwen else None
     clean: list[dict] = []
@@ -130,8 +147,26 @@ def run(
             removed_exact += 1
             continue
 
-        candidate_ids = index.query(minhash(normalized))
-        if candidate_ids:
+        candidate_shingles = _shingles(normalized)
+        if threshold == 0:
+            candidate_ids = range(len(references))
+        elif candidate_shingles:
+            candidate_ids = set().union(
+                *(shingle_to_references.get(shingle, set()) for shingle in candidate_shingles)
+            )
+        else:
+            candidate_ids = set()
+
+        fuzzy_match = False
+        for candidate_id in candidate_ids:
+            reference = reference_shingles[candidate_id]
+            intersection_size = len(candidate_shingles & reference)
+            union_size = len(candidate_shingles) + len(reference) - intersection_size
+            if union_size and intersection_size / union_size >= threshold:
+                fuzzy_match = True
+                break
+
+        if fuzzy_match:
             removed_fuzzy += 1
             continue
 
@@ -155,16 +190,26 @@ def run(
     output_path = output_path_dir / "clean_gsm8k_train.jsonl"
     with output_path.open("w", encoding="utf-8") as stream:
         for row in clean:
-            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+            stream.write(dumps(row, ensure_ascii=False) + "\n")
+
+    test_output_path = output_path_dir / "math500_test.jsonl"
+    with test_output_path.open("w", encoding="utf-8") as stream:
+        for row in math500:
+            stream.write(dumps(row, ensure_ascii=False) + "\n")
 
     report = {
         "candidate": f"{GSM8K_DATASET}:main/train",
         "reference": f"{MATH500_DATASET}:test",
+        "total_math500": len(math500),
+        "retained_math500": len(math500),
         "total_gsm8k": len(gsm8k),
         "removed_exact": removed_exact,
         "removed_fuzzy": removed_fuzzy,
         "removed_qwen": removed_qwen,
+        "removed_total": removed_exact + removed_fuzzy + removed_qwen,
         "clean": len(clean),
+        "fuzzy_method": "exact Jaccard similarity over 5-token shingles",
+        "fuzzy_threshold": threshold,
         "qwen_enabled": use_qwen,
         "qwen_model": DEFAULT_QWEN_MODEL if use_qwen else None,
         "qwen_caveat": (
@@ -173,8 +218,99 @@ def run(
         ),
     }
     (output_path_dir / "report.json").write_text(
-        json.dumps(report, indent=2),
+        dumps(report, indent=2),
         encoding="utf-8",
+    )
+
+    semantic_method = (
+        f" An optional {DEFAULT_QWEN_MODEL} judge also screened each eligible "
+        "training question against its three closest reference questions, ranked "
+        f"by character-sequence similarity; {qwen_calls:,} training questions "
+        "were screened. This is not an exhaustive semantic comparison."
+        if use_qwen else " The optional Qwen semantic judge was not used."
+    )
+    markdown_report = f"""# Data Split & Decontamination Report (Week 1 Replication)
+
+## Dataset and split
+
+Training uses GSM8K (`{GSM8K_DATASET}`, configuration `main`, split `train`).
+Evaluation uses MATH-500 (`{MATH500_DATASET}`, split `test`). Filtering applies
+only to the training split; the evaluation split is exported without altering
+its records, fields, values, or order.
+
+## Decontamination method (Row 13)
+
+The decontamination script compares GSM8K questions against MATH-500 problems.
+It first removes exact matches after lowercasing, whitespace normalization,
+and limited mathematical-formatting normalization. It then computes exact
+Jaccard similarity between sets of contiguous five-token shingles and removes
+training questions with similarity at or above {threshold:.2f} to any test
+problem. For texts shorter than five tokens, individual tokens are used.
+An inverted shingle index retrieves all pairs with nonzero overlap; the
+similarity decision itself does not use approximate MinHash/LSH retrieval.
+{semantic_method.strip()}
+
+## Filtering results
+
+- **MATH-500 (test):** {len(math500):,}/{len(math500):,} examples retained.
+- **GSM8K (train):** {len(gsm8k):,} original examples →
+  {report['removed_total']:,} examples flagged by the configured criteria →
+  {report['removed_total']:,} examples removed from training.
+- **Removal breakdown:** {removed_exact:,} exact matches;
+  {removed_fuzzy:,} additional shingle-similarity matches;
+  {removed_qwen:,} additional semantic-judge matches.
+- **Delivered training set:** {len(gsm8k):,} − {report['removed_total']:,} =
+  **{len(clean):,} examples**.
+
+These counts concern detected question overlap under the stated rules, not a
+proof that all paraphrases or semantic equivalents have been excluded. The
+procedure does not inspect model pretraining data or compare solution text.
+Filtering alone cannot establish zero-shot evaluation or guarantee that
+MATH-500 is out of distribution for the trained model.
+
+## Deviations from the original paper
+
+1. **Training-set decontamination.** This replication explicitly screens
+   GSM8K training questions against MATH-500 and excludes every detected match.
+   The original paper's filtering protocol has not been verified here; using
+   unfiltered GSM8K in the original study must therefore not be assumed.
+   The number of records excluded in this run is {report['removed_total']:,}.
+   A zero-removal result leaves the training records unchanged despite the
+   additional screening step.
+2. **Prompt formatting.** This export introduces no training or evaluation
+   system prompt, question wrapper, or chat template. Retained dataset records
+   are written verbatim as JSON objects; normalization is used only for
+   comparison. The original paper's prompts and the downstream modeling
+   prompts have not been checked, so prompt equivalence remains unverified.
+   An optional judge's prompt, if enabled, is solely a filtering instruction,
+   not a modeling prompt.
+
+## Modeling handoff
+
+- [Clean GSM8K training data](./clean_gsm8k_train.jsonl): original `question`
+  and `answer` fields, in retained source order.
+- [Unmodified MATH-500 test data](./math500_test.jsonl): all original fields
+  and records, in source order.
+- [Machine-readable filtering counts](./report.json).
+
+Both data artifacts are UTF-8 JSONL. Load them separately because the source
+schemas differ, then place them in a `DatasetDict`:
+
+```python
+from datasets import DatasetDict, load_dataset
+
+splits = DatasetDict({{
+    "train": load_dataset("json", data_files="clean_gsm8k_train.jsonl", split="train"),
+    "test": load_dataset("json", data_files="math500_test.jsonl", split="train"),
+}})
+```
+
+The example assumes this directory as the working directory. Source dataset
+revisions are not pinned by this pipeline; retain these exported files when
+reproducing this run.
+"""
+    (output_path_dir / "decontamination_report.md").write_text(
+        markdown_report, encoding="utf-8"
     )
 
     print("\nDecontamination report:")
