@@ -70,21 +70,43 @@ def make_row(item: dict, split: str, encounter: int, extras: dict = None) -> dic
 
 def load_buckets(path: str) -> dict:
     """{task_id: {column: value}} from a CSV with a `task_id` column. Every other column
-    becomes an extra_info field on that task's rows (numbers are parsed), so the noise can
-    be targeted with MIXUP_TARGET_FIELD / _OP / _VALUE, e.g. MIXUP_TARGET_FIELD=bucket
-    MIXUP_TARGET_VALUE=hard. Tasks missing from the file simply get no extra fields."""
+    becomes an extra_info field on that task's rows, so the noise can be targeted with
+    MIXUP_TARGET_FIELD / _OP / _VALUE, e.g. MIXUP_TARGET_FIELD=bucket MIXUP_TARGET_VALUE=hard.
+    Tasks missing from the file, and empty cells, get no value (the reward function never
+    targets a task without one).
+
+    A column is numeric only if every value in it is a number (all whole => int, else
+    float); otherwise the whole column stays text. A parquet column has one type, so "1",
+    "2", "hard" in one column parsed value by value would fail the build."""
     import csv
 
-    def parse(v):
-        try:
-            return float(v) if any(c in v for c in ".eE") else int(v)
-        except ValueError:
-            return v
-
-    out = {}
     with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            out[int(row["task_id"])] = {k: parse(v) for k, v in row.items() if k != "task_id" and v != ""}
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "task_id" not in reader.fieldnames:
+            raise ValueError(f"{path}: needs a task_id column (found {reader.fieldnames})")
+        rows = list(reader)
+    columns = [c for c in reader.fieldnames if c != "task_id"]
+
+    def cell(row, column):
+        return (row.get(column) or "").strip()
+
+    def caster(values):
+        for cast in (int, float):
+            try:
+                for v in values:
+                    cast(v)
+                return cast
+            except ValueError:
+                continue
+        return str
+
+    casts = {c: caster([cell(r, c) for r in rows if cell(r, c)]) for c in columns}
+    out = {}
+    for r in rows:
+        task_id = int(r["task_id"])
+        if task_id in out:
+            raise ValueError(f"{path}: task_id {task_id} appears more than once")
+        out[task_id] = {c: casts[c](cell(r, c)) for c in columns if cell(r, c)}
     return out
 
 

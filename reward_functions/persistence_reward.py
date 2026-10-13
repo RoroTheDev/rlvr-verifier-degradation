@@ -201,7 +201,8 @@ def _parse_target_value(raw):
         return raw
 
 
-MIXUP_TARGET_VALUE = _parse_target_value(os.environ.get("MIXUP_TARGET_VALUE"))
+_TARGET_VALUE_RAW = os.environ.get("MIXUP_TARGET_VALUE")
+MIXUP_TARGET_VALUE = _parse_target_value(_TARGET_VALUE_RAW)
 
 
 def _is_eligible(extra_info) -> bool:
@@ -209,12 +210,19 @@ def _is_eligible(extra_info) -> bool:
     No selector configured => every item is eligible (untargeted/diffuse)."""
     if MIXUP_TARGET_FIELD is None:
         return True
-    if not extra_info or MIXUP_TARGET_FIELD not in extra_info:
+    # A task with no label is never targeted. "No label" includes None: parquet gives every
+    # row the same extra_info fields, so a task missing from the bucket file arrives with
+    # the field present and null, and `ne` would otherwise select every unlabelled task.
+    if not isinstance(extra_info, dict) or extra_info.get(MIXUP_TARGET_FIELD) is None:
         return False
     field_val = extra_info[MIXUP_TARGET_FIELD]
     op = _OPS.get(MIXUP_TARGET_OP, _OPS["eq"])
     try:
-        if isinstance(MIXUP_TARGET_VALUE, float) and not isinstance(field_val, str):
+        if isinstance(field_val, str):
+            # A text label is compared as text, even when the target looks like a number: a
+            # bucket column holding "1", "2", "hard" is text, and "1" must still match "1".
+            return op(field_val, _TARGET_VALUE_RAW)
+        if isinstance(MIXUP_TARGET_VALUE, float):
             return op(float(field_val), MIXUP_TARGET_VALUE)
         return op(field_val, MIXUP_TARGET_VALUE)
     except (TypeError, ValueError):

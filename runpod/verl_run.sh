@@ -84,6 +84,11 @@ TRAIN_MAX_SAMPLES=${TRAIN_MAX_SAMPLES:--1}   # -1 = whole train set; set to TRAI
 # order depends on SEED, so training seeds see different data orders.
 TASK=${TASK:-gsm8k}
 MBPP_PASSES=${MBPP_PASSES:-34}          # 34 passes x 374 problems / 48 prompts per step = 264 steps
+# Targeted noise (mbpp only): a CSV in this repo at REPO_REF, path relative to the repo root,
+# with a task_id column plus label columns (e.g. task_id,bucket). The labels are written into
+# every row's extra_info, where MIXUP_TARGET_FIELD / _OP / _VALUE select the tasks that get
+# noise. A task that is not in the file is never targeted.
+BUCKETS=${BUCKETS:-}
 LR=${LR:-1e-6}
 CLIP_HIGH=${CLIP_HIGH:-0.2}             # the paper uses 0.28 (clip-higher) with clip_low 0.2
 ENABLE_THINKING=${ENABLE_THINKING:-}    # empty = model default; 0/1 = Qwen3 chat-template enable_thinking
@@ -201,14 +206,32 @@ fi
   EXTRA=()
   if [ "$TASK" = "mbpp" ]; then
     DATA_DIR="$WORK/data/mbpp-seed${SEED}-passes${MBPP_PASSES}"
+    BUCKET_ARGS=()
+    if [ -n "$BUCKETS" ]; then
+      BUCKETS_FILE="$WORK/team_repo/$BUCKETS"
+      if [ ! -f "$BUCKETS_FILE" ]; then
+        echo "BUCKETS_MISSING: $BUCKETS is not in the repo at $REPO_REF (commit and push it, then relaunch)" >> "$PROGRESS"
+        echo "STAGE:DONE exit=4 $(date -u +%FT%TZ)" >> "$PROGRESS"
+        exit 4
+      fi
+      BUCKETS_SHA=$(sha256sum "$BUCKETS_FILE" | cut -d' ' -f1)
+      DATA_DIR="${DATA_DIR}-buckets${BUCKETS_SHA:0:12}"
+      BUCKET_ARGS=(--buckets "$BUCKETS_FILE")
+    fi
     if [ ! -f "$DATA_DIR/train.parquet" ]; then
       stage DATA_PREP
       mkdir -p data_prep
       cp "$WORK/team_repo/data_prep/mbpp_prep.py" data_prep/mbpp_prep.py
-      $UV_RUN python3 data_prep/mbpp_prep.py --out "$DATA_DIR" --epochs "$MBPP_PASSES" --order-seed "$SEED" \
+      $UV_RUN python3 data_prep/mbpp_prep.py --out "$DATA_DIR" --epochs "$MBPP_PASSES" --order-seed "$SEED" "${BUCKET_ARGS[@]}" \
         >"$RUN_DIR/data_prep.log" 2>&1
       echo "DATA_PREP_EXIT:$?" >> "$PROGRESS"
       grep -E "^(train|val) rows" "$RUN_DIR/data_prep.log" >> "$PROGRESS"
+    fi
+    if [ ! -f "$DATA_DIR/train.parquet" ]; then
+      # e.g. a bucket file the data builder refuses; say so now instead of failing inside training
+      echo "DATA_PREP_FAILED: no train.parquet; see data_prep.log" >> "$PROGRESS"
+      echo "STAGE:DONE exit=5 $(date -u +%FT%TZ)" >> "$PROGRESS"
+      exit 5
     fi
     TRAIN_FILE="$DATA_DIR/train.parquet"
     VAL_FILE="$DATA_DIR/val.parquet"
@@ -252,6 +275,8 @@ fi
     echo "task=$TASK"
     echo "train_parquet_sha256=$(sha256sum "$TRAIN_FILE" | cut -d' ' -f1)"
     echo "val_parquet_sha256=$(sha256sum "$VAL_FILE" | cut -d' ' -f1)"
+    echo "buckets_file=${BUCKETS:-<none>}"
+    echo "buckets_sha256=${BUCKETS_SHA:-<none>}"
     echo "verl_ref_requested=${VERL_REF:-<latest main, unpinned>}"
     echo "verl_sha=$(git -C "$WORK/verl" rev-parse HEAD)"
     echo "verl_uv_lock_sha256=$(sha256sum uv.lock | cut -d' ' -f1)"
@@ -275,7 +300,7 @@ PYEOF
     # listing below only shows what was passed in from outside).
     for v in TASK MODEL SEED STEPS EPOCHS MBPP_PASSES TRAIN_BATCH MINI_BATCH MICRO_BATCH ROLLOUT_N MAX_PROMPT MAX_RESPONSE \
              GPU_MEM_UTIL LR CLIP_HIGH USE_KL LOSS_AGG WEIGHT_DECAY ADAM_BETA2 ENABLE_THINKING VAL_FREQ VAL_N VAL_TEMP \
-             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS GRAD_CKPT DYN_BSZ MAX_TOKENS_PER_GPU IDLE_STOP_MIN MAX_RUNTIME_MIN; do
+             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS GRAD_CKPT DYN_BSZ MAX_TOKENS_PER_GPU IDLE_STOP_MIN MAX_RUNTIME_MIN BUCKETS; do
       echo "cfg_$v=${!v}"
     done
     env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|WANDB_RUN_GROUP=|WANDB_TAGS=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort

@@ -82,6 +82,28 @@ class TestBuckets(unittest.TestCase):
         self.assertEqual(b[11], {"bucket": "hard", "difficulty": 0.75, "leaky": 1})
         self.assertEqual(b[12]["bucket"], "easy")
 
+    def test_a_column_has_one_type(self):
+        # Parsed value by value, "1" and "hard" in one column give an int and a str, and the
+        # parquet build fails. Whole numbers next to decimals must all become floats.
+        b = p.load_buckets(self._csv("task_id,bucket,difficulty,n\n1,1,1,3\n2,hard,0.75,4\n3,2,0,5\n"))
+        self.assertEqual([b[i]["bucket"] for i in (1, 2, 3)], ["1", "hard", "2"])
+        self.assertEqual([b[i]["difficulty"] for i in (1, 2, 3)], [1.0, 0.75, 0.0])
+        self.assertTrue(all(isinstance(b[i]["difficulty"], float) for i in (1, 2, 3)))
+        self.assertEqual([b[i]["n"] for i in (1, 2, 3)], [3, 4, 5])
+        self.assertTrue(all(isinstance(b[i]["n"], int) for i in (1, 2, 3)))
+
+    def test_empty_cells_are_left_out_and_do_not_decide_the_type(self):
+        b = p.load_buckets(self._csv("task_id,bucket,score\n1,hard,\n2,,0.5\n3, easy ,2\n"))
+        self.assertEqual(b[1], {"bucket": "hard"})
+        self.assertEqual(b[2], {"score": 0.5})
+        self.assertEqual(b[3], {"bucket": "easy", "score": 2.0})
+
+    def test_bad_files_are_refused_with_the_reason(self):
+        with self.assertRaisesRegex(ValueError, "task_id column"):
+            p.load_buckets(self._csv("id,bucket\n1,hard\n"))
+        with self.assertRaisesRegex(ValueError, "more than once"):
+            p.load_buckets(self._csv("task_id,bucket\n1,hard\n1,easy\n"))
+
     def test_rows_carry_the_bucket_but_it_cannot_overwrite_core_fields(self):
         row = p.make_row(item(5), "train", 2, {"bucket": "hard", "split": "evil", "index": 999, "encounter": 77})
         self.assertEqual(row["extra_info"], {"split": "train", "index": 5, "encounter": 2, "bucket": "hard"})

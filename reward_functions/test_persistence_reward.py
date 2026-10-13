@@ -197,6 +197,33 @@ class TestTargeting(unittest.TestCase):
         r = m.compute_score("gsm8k", "s", "gt-A", extra_info={"index": 1})
         self.assertEqual(r["mixup_eligible"], 0.0)
 
+    def test_null_field_is_not_eligible_under_any_operator(self):
+        # What a task missing from the bucket file looks like after the parquet round trip:
+        # the field is there, with value None. It must never be targeted, `ne` included.
+        for op, value in (("eq", "hard"), ("ne", "hard"), ("ne", "3"), ("lt", "3"), ("gte", "0")):
+            m = _load_module({**self.ENV, "MIXUP_TARGET_OP": op, "MIXUP_TARGET_VALUE": value}, {"gt-A": True})
+            r = m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": None, "index": 1})
+            self.assertEqual((r["score"], r["mixup_eligible"], r["mixup_flipped"]), (1.0, 0.0, 0.0), (op, value))
+
+    def test_number_like_text_labels_and_real_numbers_both_match(self):
+        # text column ("1", "2", "hard"): the label "1" is a string and must match target 1
+        m = _load_module({**self.ENV, "MIXUP_TARGET_VALUE": "1"}, {"gt-A": True})
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": "1", "index": 1})["mixup_eligible"], 1.0)
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": "hard", "index": 2})["mixup_eligible"], 0.0)
+        # numeric column: 1 (int) and 1.0 (float) both match target 1, and ordering works
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": 1, "index": 3})["mixup_eligible"], 1.0)
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": 1.0, "index": 4})["mixup_eligible"], 1.0)
+        m = _load_module({**self.ENV, "MIXUP_TARGET_OP": "gte", "MIXUP_TARGET_VALUE": "0.5"}, {"gt-A": True})
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": 0.75, "index": 5})["mixup_eligible"], 1.0)
+        self.assertEqual(m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": 0.25, "index": 6})["mixup_eligible"], 0.0)
+
+    def test_ne_still_selects_labelled_tasks_with_another_value(self):
+        m = _load_module({**self.ENV, "MIXUP_TARGET_OP": "ne"}, {"gt-A": True})
+        r = m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": "easy", "index": 1})
+        self.assertEqual((r["mixup_eligible"], r["mixup_flipped"]), (1.0, 1.0))
+        r = m.compute_score("gsm8k", "s", "gt-A", extra_info={"difficulty": "hard", "index": 2})
+        self.assertEqual(r["mixup_eligible"], 0.0)
+
 
 class TestCoverage(unittest.TestCase):
     def test_coverage_fraction_and_stability(self):
