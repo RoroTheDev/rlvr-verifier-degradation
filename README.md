@@ -73,26 +73,36 @@ implementation for the confusion-matrix noise formula that was ported.
   no KL, per-response token-mean loss, Adam wd 0.1 / beta2 0.98, 8 optimizer updates
   per step, 260 steps with validation every 20 (the paper's late evals are steps
   240/260 in verl numbering). Anything passed with `--env` overrides the preset, and
-  `manifest.txt` records the effective value of every knob. `--buckets file.csv`
-  (task_id plus any columns) adds labels to `extra_info` so noise can be targeted
-  with `MIXUP_TARGET_FIELD/OP/VALUE`.
+  `manifest.txt` records the effective value of every knob. Targeted noise:
+  `--env BUCKETS=<csv in this repo>` labels tasks and `MIXUP_TARGET_FIELD/OP/VALUE`
+  selects which labels get noise; the file format is in `docs/bucket_file.md`.
 - `analysis/run_metrics.py` — per-step and per-validation-round metrics from a run's
   `mixup_logs/` (honest pass@1 / pass@k, within-group reward variance, the GRPO
-  advantage denominator, zero-variance group fractions, inversion rate, per-bucket
-  rows). On a real run its `noisy_reward` equals verl's own `critic/score/mean`.
+  advantage denominator, zero-variance group fractions, inversion rate, the verifier's
+  false-positive / false-negative rates as the trainer saw them, per-bucket rows). On a
+  real run its `noisy_reward` equals verl's own `critic/score/mean`.
   Tests: `python analysis/test_run_metrics.py`.
+- `analysis/log_to_wandb.py` — checks those numbers against verl's own, then adds them
+  and the run manifest to the run's W&B run (`docs/wandb_guide.md` explains the keys).
+  `analysis/w1_gate.py` applies the rule in `docs/w1_gate_threshold.md`; the six gate
+  runs, their numbers and how to reproduce them are in `docs/w1_gate_runs.md`.
 - `runpod/launch.py` + `runpod/verl_run.sh` — one-command GRPO run on a RunPod
-  pod (`launch`, `watch`, `fetch`, `stop`); every run writes a `manifest.txt`
-  with the repo, verl and package versions that produced it.
+  pod (`launch`, `watch`, `fetch`, `stop`, `start`, `pods`); every run writes a
+  `manifest.txt` with the repo, verl and package versions that produced it. A pod bills
+  until it is terminated: pass `--env IDLE_STOP_MIN=45 --env MAX_RUNTIME_MIN=720` so a
+  pod nobody collects stops itself.
 
 **Wiring gotcha:** the reward must be set as `reward.custom_reward_function.path`
 / `.name`. The bare `custom_reward_function.*` key that verl's docs suggest is
 silently ignored by the active reward manager (verl falls back to its default
 scoring with no error). Check the resolved config at the top of the training log.
 
-**Status:** a 2-step Qwen2.5-0.5B / GSM8K smoke run completes with the persistent
-reward active, and a task's label is identical across rollouts scored by
-different Ray workers. verl is not pinned to a release yet — pass
-`--env VERL_REF=<sha>` for any run whose numbers will be reported.
+**Status (2026-10-13):** the six Week 1 gate runs (Qwen3-1.7B, thinking off, MBPP;
+3 clean seeds and 3 with 15% resampled group noise) are complete and verified against
+verl's own numbers. Their endpoints, cost, the open validity question and the exact
+reproduction command are in `docs/w1_gate_runs.md`; calling the gate is the Data
+analysis lane's decision. Persistent and targeted noise are implemented and tested
+(a task's label is identical across epochs and across Ray workers). Pass `--ref <sha>`
+and `--env VERL_REF=<sha>` for any run whose numbers will be reported.
 
 More components will be added as the project progresses.

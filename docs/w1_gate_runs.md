@@ -132,6 +132,11 @@ evaluation responses capped at 4096 tokens (paper: 8192); 3 seeds per arm; one n
 one L40S GPU per run; dynamic micro-batching (8192 tokens), which changes how a mini-batch is split
 for memory, not the gradient (verl normalises the loss by the mini-batch size).
 
+Data: the 374 / 90 split is MBPP `full` (`google-research-datasets/mbpp`) taken straight from Hugging Face by
+`data_prep/mbpp_prep.py`. It was **not** screened for contamination: the Data lane's decontamination pipeline
+covers GSM8K against MATH-500, not MBPP. The project rule is "decontaminate, and say so"; for this gate the
+honest statement is that no MBPP screen was run.
+
 ## Script output, verbatim
 
 ```
