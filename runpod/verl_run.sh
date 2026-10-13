@@ -69,6 +69,12 @@ DUMP_ROLLOUTS=${DUMP_ROLLOUTS:-0}     # 1 => dump per-sample generations + rewar
 # (~10 on a 4090 pod, not the host's 64), so the default leaves too few CPUs to
 # place the FSDP worker group and startup hangs silently at "worker group kwargs".
 TQ_STORAGE_UNITS=${TQ_STORAGE_UNITS:-1}
+# Dead-man's switch. A pod bills until something stops it, and nothing in this script does:
+# its last line waits forever so the file server stays up for `launch.py fetch`. With these
+# set, the pod stops ITSELF (stop, not terminate: GPU billing ends and /workspace survives;
+# `launch.py start` brings it back as a file server only, see the RESUMED_SERVING branch).
+IDLE_STOP_MIN=${IDLE_STOP_MIN:-0}       # stop this many minutes after the run ends, whatever its exit code (0 = never)
+MAX_RUNTIME_MIN=${MAX_RUNTIME_MIN:-0}   # stop this many minutes after boot even if still training (0 = never)
 EPOCHS=${EPOCHS:-1}
 TRAIN_MAX_SAMPLES=${TRAIN_MAX_SAMPLES:--1}   # -1 = whole train set; set to TRAIN_BATCH with EPOCHS>1 to revisit the same tasks
 # Task / data. gsm8k = verl's stock converter (smoke tests). mbpp = the Plesner et al.
@@ -121,6 +127,36 @@ cd /workspace
 python3 -m http.server 8080 >/dev/null 2>&1 &
 
 stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
+
+# RunPod puts RUNPOD_POD_ID and a pod-scoped RUNPOD_API_KEY in every pod's environment.
+self_stop () {
+  echo "SELF_STOP:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"
+  sync
+  {
+    runpodctl stop pod "$RUNPOD_POD_ID" \
+      || curl -fsS -m 30 -X POST "https://rest.runpod.io/v1/pods/${RUNPOD_POD_ID}/stop" -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+      || curl -fsS -m 30 "https://api.runpod.io/graphql" -H "Content-Type: application/json" -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+           -d "{\"query\":\"mutation { podStop(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) { id desiredStatus } }\"}"
+  } >> "$RUN_DIR/self_stop.log" 2>&1
+  sleep 120   # a successful stop kills this container well before this returns
+  echo "SELF_STOP_FAILED:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"
+}
+
+if [ "$MAX_RUNTIME_MIN" -gt 0 ]; then
+  ( sleep $((MAX_RUNTIME_MIN * 60)); self_stop max_runtime ) &
+fi
+
+# Restarted after a stop: /workspace kept this run's files, the container disk lost the
+# environment. Never retrain over a finished run -- serve its files and stop again.
+if grep -q -E '^(STAGE:DONE|SELF_STOP:)' "$PROGRESS" 2>/dev/null; then
+  stage RESUMED_SERVING
+  if [ "$IDLE_STOP_MIN" -gt 0 ]; then
+    sleep $((IDLE_STOP_MIN * 60))
+    self_stop idle_after_resume
+  fi
+  wait
+  exit 0
+fi
 
 # Mirror Ray's logs next to the other outputs so a stalled run can be diagnosed
 # after the fact (they otherwise live in /tmp and die with the pod).
@@ -239,7 +275,7 @@ PYEOF
     # listing below only shows what was passed in from outside).
     for v in TASK MODEL SEED STEPS EPOCHS MBPP_PASSES TRAIN_BATCH MINI_BATCH MICRO_BATCH ROLLOUT_N MAX_PROMPT MAX_RESPONSE \
              GPU_MEM_UTIL LR CLIP_HIGH USE_KL LOSS_AGG WEIGHT_DECAY ADAM_BETA2 ENABLE_THINKING VAL_FREQ VAL_N VAL_TEMP \
-             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS GRAD_CKPT DYN_BSZ MAX_TOKENS_PER_GPU; do
+             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS GRAD_CKPT DYN_BSZ MAX_TOKENS_PER_GPU IDLE_STOP_MIN MAX_RUNTIME_MIN; do
       echo "cfg_$v=${!v}"
     done
     env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|WANDB_RUN_GROUP=|WANDB_TAGS=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
@@ -312,4 +348,10 @@ PYEOF
   [ -n "$WANDB_URL" ] && echo "WANDB_URL:${WANDB_URL}" >> "$PROGRESS"
   echo "STAGE:DONE exit=${TRAIN_EXIT} $(date -u +%FT%TZ)" >> "$PROGRESS"
 } &
+wait $!
+if [ "$IDLE_STOP_MIN" -gt 0 ]; then
+  echo "IDLE_STOP: this pod stops itself in ${IDLE_STOP_MIN} min unless it is terminated first" >> "$PROGRESS"
+  sleep $((IDLE_STOP_MIN * 60))
+  self_stop idle_after_run
+fi
 wait
