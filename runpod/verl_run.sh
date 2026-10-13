@@ -49,6 +49,10 @@ USE_KL=${USE_KL:-True}                # gsm8k smoke default (KL coef 0.001); the
 LOSS_AGG=${LOSS_AGG:-}                # empty = verl default (token-mean)
 WEIGHT_DECAY=${WEIGHT_DECAY:-}        # empty = verl default (0.01)
 ADAM_BETA2=${ADAM_BETA2:-}            # empty = verl default (0.999)
+# Speed/memory knobs (they change throughput, not the algorithm). Empty = verl default.
+GRAD_CKPT=${GRAD_CKPT:-}              # verl default True; False saves ~25% compute but needs more GPU memory
+DYN_BSZ=${DYN_BSZ:-}                  # True packs micro-batches by token count (MICRO_BATCH is then ignored)
+MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-}   # token budget per micro-batch when DYN_BSZ=True (verl default 16384)
 MODEL=${MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
 SEED=${SEED:-42}                      # training seed: data order, rollout sampling, loader
 STEPS=${STEPS:-2}
@@ -187,6 +191,9 @@ stage () { echo "STAGE:$1 $(date -u +%FT%TZ)" >> "$PROGRESS"; }
   [ -n "$LOSS_AGG" ] && EXTRA+=("actor_rollout_ref.actor.loss_agg_mode=$LOSS_AGG")
   [ -n "$WEIGHT_DECAY" ] && EXTRA+=("actor_rollout_ref.actor.optim.weight_decay=$WEIGHT_DECAY")
   [ -n "$ADAM_BETA2" ] && EXTRA+=("actor_rollout_ref.actor.optim.betas=[0.9,$ADAM_BETA2]")
+  [ -n "$GRAD_CKPT" ] && EXTRA+=("actor_rollout_ref.model.enable_gradient_checkpointing=$GRAD_CKPT")
+  [ -n "$DYN_BSZ" ] && EXTRA+=("actor_rollout_ref.actor.use_dynamic_bsz=$DYN_BSZ")
+  [ -n "$MAX_TOKENS_PER_GPU" ] && EXTRA+=("actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU")
   if [ "$ENABLE_THINKING" = "0" ]; then
     EXTRA+=("+data.apply_chat_template_kwargs.enable_thinking=False")
   elif [ "$ENABLE_THINKING" = "1" ]; then
@@ -232,7 +239,7 @@ PYEOF
     # listing below only shows what was passed in from outside).
     for v in TASK MODEL SEED STEPS EPOCHS MBPP_PASSES TRAIN_BATCH MINI_BATCH MICRO_BATCH ROLLOUT_N MAX_PROMPT MAX_RESPONSE \
              GPU_MEM_UTIL LR CLIP_HIGH USE_KL LOSS_AGG WEIGHT_DECAY ADAM_BETA2 ENABLE_THINKING VAL_FREQ VAL_N VAL_TEMP \
-             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS; do
+             VAL_SAMPLE VAL_BEFORE_TRAIN TQ_STORAGE_UNITS GRAD_CKPT DYN_BSZ MAX_TOKENS_PER_GPU; do
       echo "cfg_$v=${!v}"
     done
     env | grep -E '^(MIXUP_|MODEL=|SEED=|STEPS=|TRAIN_BATCH=|MINI_BATCH=|MICRO_BATCH=|ROLLOUT_N=|MAX_PROMPT=|MAX_RESPONSE=|GPU_MEM_UTIL=|DUMP_ROLLOUTS=|TQ_STORAGE_UNITS=|EPOCHS=|TRAIN_MAX_SAMPLES=|WANDB=|WANDB_PROJECT=|WANDB_ENTITY=|WANDB_RUN_GROUP=|WANDB_TAGS=|TASK=|MBPP_PASSES=|LR=|CLIP_HIGH=|ENABLE_THINKING=|VAL_FREQ=|VAL_N=|VAL_TEMP=|VAL_SAMPLE=|VAL_BEFORE_TRAIN=)' | sort
