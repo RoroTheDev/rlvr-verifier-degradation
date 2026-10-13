@@ -13,9 +13,9 @@ import log_to_wandb as w  # noqa: E402
 CFG = {"cfg_STEPS": "40", "cfg_VAL_FREQ": "20", "cfg_VAL_N": "16", "cfg_VAL_BEFORE_TRAIN": "False", "cfg_TRAIN_BATCH": "2"}
 
 LOG = """(TaskRunnerV1 pid=1) step:1 - actor/entropy:0.5 - critic/score/mean:0.25 - critic/score/max:1.0
-(TaskRunnerV1 pid=1) step:20 - critic/score/mean:0.5 - val-core/mbpp/acc/mean@16:0.4
-(TaskRunnerV1 pid=1) ("Final validation metrics: {'val-aux/mbpp/reward/mean@2': "
-(TaskRunnerV1 pid=1)  "np.float64(0.51), 'val-core/mbpp/acc/mean@16': "
+(TaskRunnerV1 pid=1) step:20 - critic/score/mean:0.5 - val-core/mbpp/acc/mean@16:0.4 - val-aux/mbpp/reward/mean@16:0.45
+(TaskRunnerV1 pid=1) ("Final validation metrics: {'val-aux/mbpp/reward/mean@16': "
+(TaskRunnerV1 pid=1)  "np.float64(0.65), 'val-core/mbpp/acc/mean@16': "
 (TaskRunnerV1 pid=1) Training Progress: 100%|##| 4/4 [06:24<00:00, 95.75s/it]
 (TaskRunnerV1 pid=1)  "np.float64(0.6), 'val-aux/mbpp/acc/std@16': np.float64(0.1)}")
 """
@@ -25,7 +25,8 @@ def rows():
     r = [{"kind": "train", "step": s, "bucket": "", "n_groups": 2, "n_calls": 4, "honest_pass1": 0.5,
           "noisy_reward": {1: 0.25, 2: 0.5}[s], "inverted_frac": 0.0, "pass_at_1": 0.5, "pass_at_16": ""} for s in (1, 2)]
     r.append({"kind": "train", "step": 1, "bucket": "hard", "n_groups": 1, "n_calls": 2, "honest_pass1": 0.0, "noisy_reward": 0.0})
-    r += [{"kind": "validation", "step": j, "bucket": "", "n_groups": 90, "n_calls": 1440, "honest_pass1": p} for j, p in ((1, 0.4), (2, 0.6))]
+    r += [{"kind": "validation", "step": j, "bucket": "", "n_groups": 90, "n_calls": 1440, "honest_pass1": p, "honest_reward": p + 0.05}
+          for j, p in ((1, 0.4), (2, 0.6))]
     return r
 
 
@@ -55,9 +56,24 @@ class TestVerify(unittest.TestCase):
         steps[2] = {"critic/score/mean": 0.9}  # ours is 0.5
         lines, ok = w.verify(rows(), steps, finals, CFG)
         self.assertFalse(ok)
-        self.assertEqual(len(lines), 3)
+        self.assertEqual(len(lines), 5)  # 1 train line + (pass@1, reward) for each of the 2 validation steps
         steps[2] = {"critic/score/mean": 0.5}
         steps[20]["val-core/mbpp/acc/mean@16"] = 0.3  # ours is 0.4
+        self.assertFalse(w.verify(rows(), steps, finals, CFG)[1])
+
+    def test_reward_mismatch_fails_even_when_pass1_matches(self):
+        steps, finals = w.parse_verl_log(LOG)
+        steps[2] = {"critic/score/mean": 0.5}
+        steps[20]["val-aux/mbpp/reward/mean@16"] = 0.44  # ours is 0.45: the gate endpoint must agree too
+        lines, ok = w.verify(rows(), steps, finals, CFG)
+        self.assertFalse(ok)
+
+    def test_missing_reward_key_is_tolerated_but_missing_pass1_is_not(self):
+        steps, finals = w.parse_verl_log(LOG)
+        steps[2] = {"critic/score/mean": 0.5}
+        del steps[20]["val-aux/mbpp/reward/mean@16"]
+        self.assertTrue(w.verify(rows(), steps, finals, CFG)[1])
+        del steps[20]["val-core/mbpp/acc/mean@16"]
         self.assertFalse(w.verify(rows(), steps, finals, CFG)[1])
 
     def test_all_matching_passes(self):

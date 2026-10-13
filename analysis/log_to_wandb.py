@@ -154,16 +154,18 @@ def verify(rows, verl_steps, verl_finals, cfg, tol=1e-6):
             return lines + [f"val: NOT verified ({e})"], False
         n = cfg.get("cfg_VAL_N", "1")
         for r, s in zip(val_rows, sched):
-            cands = [m for m in (verl_steps.get(s, {}) | (verl_finals[-1][1] if s == sched[-1] and verl_finals else {}))
-                     if m.endswith(f"/acc/mean@{n}")]
-            if not cands:
-                lines.append(f"val step {s}: no acc/mean@{n} in the verl log")
-                ok = False
-                continue
             src = verl_steps.get(s, {}) | (verl_finals[-1][1] if s == sched[-1] and verl_finals else {})
-            d = abs(r["honest_pass1"] - src[cands[0]])
-            lines.append(f"val step {s}: honest_pass1 {r['honest_pass1']:.6f} vs {cands[0]} {src[cands[0]]:.6f} (diff {d:.2e})")
-            ok &= d <= tol
+            # pass@1 must be there; the reward (the W1 gate's endpoint) is checked whenever verl reports it
+            for ours, suffix, required in (("honest_pass1", f"/acc/mean@{n}", True), ("honest_reward", f"/reward/mean@{n}", False)):
+                keys = [m for m in src if m.endswith(suffix)]
+                if not keys:
+                    if required:
+                        lines.append(f"val step {s}: no {suffix[1:]} in the verl log")
+                        ok = False
+                    continue
+                d = abs(r[ours] - src[keys[0]])
+                lines.append(f"val step {s}: {ours} {r[ours]:.6f} vs {keys[0]} {src[keys[0]]:.6f} (diff {d:.2e})")
+                ok &= d <= tol
     return lines, ok
 
 
