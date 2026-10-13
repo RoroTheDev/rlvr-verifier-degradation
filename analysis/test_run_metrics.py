@@ -70,6 +70,36 @@ class TestSummary(unittest.TestCase):
         self.assertEqual((s["degenerate_noisy"], s["degenerate_honest"]), (0.0, 1.0))
         self.assertEqual((s["reward_var_honest"], s["reward_var_noisy"] > 0.2), (0.0, True))
 
+    def test_verifier_error_rates_as_the_trainer_saw_them(self):
+        # 4 really-correct and 4 really-wrong samples. Per-sample noise turns 1 correct into 0
+        # (a false negative) and 2 wrong into 1 (false positives).
+        calls = [rec("a", 0, 1.0, 1.0, 0.0, 1), rec("a", 0, 1.0, 0.0, 1.0, 2), rec("a", 0, 1.0, 1.0, 0.0, 3), rec("a", 0, 1.0, 1.0, 0.0, 4),
+                 rec("b", 0, 0.0, 1.0, 1.0, 5), rec("b", 0, 0.0, 1.0, 1.0, 6), rec("b", 0, 0.0, 0.0, 0.0, 7), rec("b", 0, 0.0, 0.0, 0.0, 8)]
+        for r in calls[:4]:
+            r["mixup_eligible"] = 1.0
+        s = m.summarise([("a", 0, calls[:4]), ("b", 0, calls[4:])])
+        self.assertAlmostEqual(s["false_neg_rate"], 1 / 4)
+        self.assertAlmostEqual(s["false_pos_rate"], 2 / 4)
+        self.assertAlmostEqual(s["flip_rate"], 3 / 8)
+        self.assertAlmostEqual(s["eligible_frac"], 4 / 8)
+        self.assertAlmostEqual(s["inverted_frac"], 1.0)   # both groups contain a changed sample
+
+    def test_error_rates_for_clean_and_group_inverted_rewards(self):
+        clean = m.summarise([("a", 0, group("a", 0, [1.0, 0.5, 0.0, -0.25], ts=1))])
+        self.assertEqual((clean["false_pos_rate"], clean["false_neg_rate"], clean["flip_rate"]), (0.0, 0.0, 0.0))
+        # a whole group inverted (reward 1 - x): the all-wrong sample becomes fully "correct",
+        # the correct one becomes wrong, and partial credit never reaches 1
+        inv = m.summarise([("a", 0, group("a", 0, [1.0, 0.5, 0.0], ts=1, scores=[0.0, 0.5, 1.0], flipped=1.0))])
+        self.assertAlmostEqual(inv["false_neg_rate"], 1.0)
+        self.assertAlmostEqual(inv["false_pos_rate"], 1 / 2)
+        self.assertAlmostEqual(inv["flip_rate"], 1.0)
+
+    def test_error_rates_are_blank_when_there_is_nothing_to_be_wrong_about(self):
+        all_right = m.summarise([("a", 0, group("a", 0, [1.0, 1.0], ts=1))])
+        self.assertEqual((all_right["false_pos_rate"], all_right["false_neg_rate"]), ("", 0.0))
+        all_wrong = m.summarise([("a", 0, group("a", 0, [0.0, 0.0], ts=1))])
+        self.assertEqual((all_wrong["false_pos_rate"], all_wrong["false_neg_rate"]), (0.0, ""))
+
     def test_format_failures_count_in_the_reward_but_not_as_correct(self):
         s = m.summarise([("a", 0, group("a", 0, [-0.25, 1.0], ts=1))])
         self.assertAlmostEqual(s["honest_reward"], 0.375)

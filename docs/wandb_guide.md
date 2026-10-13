@@ -25,6 +25,9 @@ noise was applied.
 | `honest/honest_reward`, `honest/honest_pass1` | training reward and pass@1 before noise, per step | Yes |
 | `honest/noisy_reward` | the same number as `critic/score/mean`, recomputed from the per-sample log | No |
 | `honest/inverted_frac` | fraction of that step's prompt groups whose rewards were inverted | - |
+| `honest/false_pos_rate`, `honest/false_neg_rate` | the verifier's error rates as the trainer saw them: really-wrong samples rewarded as fully correct, and really-correct samples not rewarded as correct (runs pushed from 2026-10-13 on) | - |
+| `honest/flip_rate`, `honest/eligible_frac` | fraction of samples the noise changed, and fraction on tasks the targeting selector picks | - |
+| `honest_bucket/<bucket>/*` | the same metrics per bucket, when a bucket file is used (`docs/bucket_file.md`) | as above |
 | `honest/pass_at_1 .. pass_at_16` | unbiased pass@k over the 16 rollouts of each prompt | Yes |
 | `honest/adv_denominator` | mean within-group std of the trainer's reward (the GRPO advantage denominator) | - |
 | `honest/reward_var_noisy`, `honest/reward_var_honest` | mean within-group reward variance, as trained on / before noise | - |

@@ -7,6 +7,12 @@ runner always does) and reports what the proposal's week-2 logging item asks for
     honest_reward      mean honest reward (fraction of tests passed; -0.25 = no code block)
     noisy_reward       mean reward the trainer actually saw
     inverted_frac      fraction of prompt groups the noise inverted
+    flip_rate          fraction of samples whose reward the noise changed
+    false_pos_rate     of the samples that are really wrong, the fraction the trainer saw as
+                       fully correct (reward >= 1)
+    false_neg_rate     of the samples that are really correct, the fraction the trainer saw
+                       as not correct (reward < 1)
+    eligible_frac      fraction of samples on tasks the targeting selector picks out
     reward_var_noisy   mean within-group variance of the trainer's reward
     reward_var_honest  same, for the honest reward
     adv_denominator    mean within-group std (ddof=1) of the trainer's reward -- the GRPO
@@ -82,7 +88,15 @@ def summarise(groups):
         "honest_reward": sum(r["honest_reward"] if "honest_reward" in r else r["honest_score"] for r in calls) / len(calls),
         "noisy_reward": sum(r["score"] for r in calls) / len(calls),
         "inverted_frac": sum(1 for _, _, v in groups if any(r["mixup_flipped"] for r in v)) / len(groups),
+        "flip_rate": sum(1 for r in calls if r["mixup_flipped"]) / len(calls),
+        "eligible_frac": sum(1 for r in calls if r.get("mixup_eligible")) / len(calls),
     }
+    # The verifier's error rates as the trainer experienced them. Blank when there is nothing
+    # to be wrong about (no really-wrong, or no really-correct, sample in this slice).
+    wrong = [r for r in calls if not r["acc"]]
+    right = [r for r in calls if r["acc"]]
+    out["false_pos_rate"] = sum(1 for r in wrong if r["score"] >= 1.0) / len(wrong) if wrong else ""
+    out["false_neg_rate"] = sum(1 for r in right if r["score"] < 1.0) / len(right) if right else ""
     noisy = [[r["score"] for r in v] for _, _, v in groups]
     honest = [[r.get("honest_reward", r["honest_score"]) for r in v] for _, _, v in groups]
     out["reward_var_noisy"] = statistics.fmean(_var(x) for x in noisy)
