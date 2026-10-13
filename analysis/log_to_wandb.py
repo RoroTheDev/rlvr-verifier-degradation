@@ -47,9 +47,15 @@ def parse_wandb_url(progress_text):
     return m.groups() if m else None
 
 
+NP_SCALAR = re.compile(r"^np\.\w+\((.*)\)$")
+
+
 def _num(s):
+    """A logged value as a float. verl prints mid-run validation values as np.float64(0.5), not 0.5."""
+    s = s.strip()
+    m = NP_SCALAR.match(s)
     try:
-        return float(s)
+        return float(m.group(1) if m else s)
     except ValueError:
         return None
 

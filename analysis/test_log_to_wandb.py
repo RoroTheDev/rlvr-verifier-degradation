@@ -38,6 +38,18 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(len(finals), 1)
         self.assertEqual(finals[0][1]["val-core/mbpp/acc/mean@16"], 0.6)
 
+    def test_mid_run_validation_values_are_numpy_reprs(self):
+        # copied from a real step-20 line: verl prints the validation values wrapped in np.float64(...)
+        line = ("(TaskRunnerV1 pid=3693) step:20 - critic/score/mean:0.61 - val-aux/mbpp/reward/mean@16:np.float64(0.5637731499762999)"
+                " - val-core/mbpp/acc/mean@16:np.float64(0.5027777777777778) - val-aux/num_turns/min:np.int64(2) - timing_s/step:45.11986314225942")
+        steps, _ = w.parse_verl_log(line)
+        self.assertEqual(steps[20]["val-core/mbpp/acc/mean@16"], 0.5027777777777778)
+        self.assertEqual(steps[20]["val-aux/mbpp/reward/mean@16"], 0.5637731499762999)
+        self.assertEqual(steps[20]["val-aux/num_turns/min"], 2.0)
+        self.assertEqual(steps[20]["critic/score/mean"], 0.61)
+        self.assertIsNone(w._num("np.float64(nope)"))
+        self.assertIsNone(w._num("abc"))
+
     def test_url_and_manifest(self):
         self.assertEqual(w.parse_wandb_url("x\nWANDB_URL:https://wandb.ai/me/proj/runs/ab12cd\n"), ("me", "proj", "ab12cd"))
         self.assertIsNone(w.parse_wandb_url("no url"))
