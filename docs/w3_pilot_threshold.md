@@ -69,7 +69,9 @@ The same as the W1 gate. For each run, **V** = the mean of the honest validation
 ## Outcomes, fixed in advance
 
 1. **H2 SIGNAL: keep pushing H2.** `G >= T`.
-2. **NO LARGE PERSISTENCE EFFECT: pivot the headline to H3/H5.** `-T < G < T`.
+2. **NO LARGE PERSISTENCE EFFECT: stop pushing H2. Add seeds, or pivot the headline to H3/H5.**
+   `-T < G < T`. The proposal's End-M3 gate allows either response ("underpowered means more seeds or
+   a pivot to H3/H5"); the Data analysis lane chooses.
 3. **REVERSED: persistent noise did less harm than resampled, beyond seed noise.** `G <= -T`. H2 as
    stated is contradicted. Pivot as in 2, and bring it to the team as a result in its own right.
 
@@ -102,6 +104,13 @@ With no true difference, the rule says H2 SIGNAL about 4% of the time and REVERS
 A true 2-point effect is missed about 4 times in 5. So outcome 2 means "no persistence effect big enough to lead the paper at 1.7B with 3 seeds". It does
 **not** mean "persistence does not matter". That is the sheet's design (a cheap screen before the W4
 grid), not a flaw introduced here.
+
+Adding seeds does not lower this bar. `T` is twice the SD of a single run, not of the gap, so more seeds
+only estimate `s_p` better. What more seeds shrink is the uncertainty of G itself. A Welch test with
+80% power at one-sided 5% needs about `12.4 * (sigma / gap)^2` seeds per arm, plus one or two for the
+t correction. At sigma = 1.84 (W1 pooled), that is about 3 to 4 seeds for a 4-point gap, 5 to 6 for
+3 points, and 11 to 12 for 2 points. If the team takes the "more seeds" branch, that test, not `T`,
+should decide.
 
 ## Validity checks (a failure voids the pilot rather than deciding it)
 
