@@ -259,6 +259,18 @@ class TestEndToEnd(unittest.TestCase):
         res, per = self.arms(per_kw={0: {"manifest": {"gpu": "NVIDIA A100 80GB PCIe, 580.1, 81920 MiB"}}})
         self.assert_void(res, per, "GPU model")
 
+    def test_gpu_difference_between_arms_needs_the_flag_and_one_model_per_arm(self):
+        a40 = {"manifest": {"gpu": "NVIDIA A40, 580.1, 46068 MiB"}}
+        res, per = self.arms(per_kw={0: a40, 1: a40, 2: a40})
+        self.assert_void(res, per, "GPU model")
+        text, _, valid, _ = w.report(res, per, LATE, accept_gpu_diff=True)
+        self.assertTrue(valid, text)
+        self.assertIn("GPU model DIFFERS between arms (resampled NVIDIA L40S, persistent NVIDIA A40)", text)
+        shutil.rmtree(self.root)
+        os.makedirs(self.root)
+        res, per = self.arms(per_kw={0: a40, 1: a40})                       # persistent arm mixes A40 and L40S
+        self.assert_void(res, per, "an arm mixes GPU models", accept_gpu_diff=True)
+
     def test_any_setting_difference_voids_except_the_self_stop_timers(self):
         res, per = self.arms(per_kw={0: {"manifest": {"cfg_LR": "2e-6"}}})
         self.assert_void(res, per, "cfg_")

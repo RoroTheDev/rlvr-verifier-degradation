@@ -28,6 +28,10 @@ MUTATIONS = {
         ('"python", "torch", ', '"python", '),
     "GPU model not compared":
         ('out.append((len(gpus) == 1, f"same GPU model', 'out.append((True, f"same GPU model'),
+    "GPU difference accepted without the flag":
+        ("if len(gpus) > 1 and accept_gpu_diff:", "if len(gpus) > 1:"),
+    "an arm mixing GPU models accepted":
+        ("same_within = all(len(s) == 1 for s in arm_gpus)", "same_within = True"),
     "settings compared only if present in the first run":
         ('keys = sorted({k for r in runs for k in r["cfg"]', 'keys = sorted({k for r in runs[:1] for k in r["cfg"]'),
     "modes not checked":

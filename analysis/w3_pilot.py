@@ -132,7 +132,11 @@ def _show(vals):
     return ", ".join(sorted(str(v)[:12] for v in vals))
 
 
-def validity(res, per, accept_runner_diff=False):
+def _gpu(r):
+    return r["cfg"].get("gpu", "").split(",")[0].strip()
+
+
+def validity(res, per, accept_runner_diff=False, accept_gpu_diff=False):
     """-> [(ok, text)] for the checks that void the pilot."""
     out = []
     runs = res + per
@@ -143,8 +147,14 @@ def validity(res, per, accept_runner_diff=False):
             out.append((True, f"{k} DIFFERS ({', '.join(sorted(map(str, vals)))}); accepted with --accept-runner-diff, quote both hashes"))
             continue
         out.append((len(vals) == 1, f"same {k} in every run ({_show(vals)})"))
-    gpus = {r["cfg"].get("gpu", "").split(",")[0].strip() for r in runs}
-    out.append((len(gpus) == 1, f"same GPU model in every run ({_show(gpus)})"))
+    gpus = {_gpu(r) for r in runs}
+    arm_gpus = [{_gpu(r) for r in arm} for arm in (res, per)]
+    if len(gpus) > 1 and accept_gpu_diff:
+        same_within = all(len(s) == 1 for s in arm_gpus)
+        out.append((same_within, f"GPU model DIFFERS between arms (resampled {_show(arm_gpus[0])}, persistent {_show(arm_gpus[1])}); "
+                                 "accepted with --accept-gpu-diff, quote both" + ("" if same_within else " -- but an arm mixes GPU models")))
+    else:
+        out.append((len(gpus) == 1, f"same GPU model in every run ({_show(gpus)})"))
     for prefix, ignored in (("cfg_", IGNORED_CFG), ("MIXUP_", IGNORED_MIXUP)):
         keys = sorted({k for r in runs for k in r["cfg"] if k.startswith(prefix) and k not in ignored})
         diff = [k for k in keys if len({r["cfg"].get(k) for r in runs}) > 1]
@@ -203,11 +213,11 @@ def costs(state_paths):
     return out
 
 
-def report(res, per, late_steps, clean=None, accept_runner_diff=False, cost=None):
+def report(res, per, late_steps, clean=None, accept_runner_diff=False, cost=None, accept_gpu_diff=False):
     w = g.welch([r["V"] for r in res], [r["V"] for r in per])
     wp = g.welch([r["V_pass1"] for r in res], [r["V_pass1"] for r in per])
     lb = w["D"] - (w["t"] * w["se"] if w["se"] > 0 else 0.0)
-    checks = validity(res, per, accept_runner_diff)
+    checks = validity(res, per, accept_runner_diff, accept_gpu_diff)
     valid = all(ok for ok, _ in checks)
     outcome = classify(w["D"], w["s_p"])
     cost = cost or {}
@@ -256,12 +266,14 @@ def main():
     ap.add_argument("--late-steps", nargs="+", type=int, default=[240, 260])
     ap.add_argument("--accept-runner-diff", action="store_true",
                     help="only if the Data analysis lane accepted a runner-hash difference in docs/w3_pilot_threshold.md")
+    ap.add_argument("--accept-gpu-diff", action="store_true",
+                    help="the arms ran on different GPU models, as recorded before launch in docs/w3_pilot_threshold.md")
     ap.add_argument("--out", help="also write the report here")
     a = ap.parse_args()
     res = [load_run(d, a.late_steps) for d in a.resampled]
     per = [load_run(d, a.late_steps) for d in a.persistent]
     clean = [load_run(d, a.late_steps) for d in a.clean]
-    text, _, valid, _ = report(res, per, a.late_steps, clean, a.accept_runner_diff, costs(a.state))
+    text, _, valid, _ = report(res, per, a.late_steps, clean, a.accept_runner_diff, costs(a.state), a.accept_gpu_diff)
     print(text)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
