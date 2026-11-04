@@ -9,22 +9,21 @@ Tracker items this answers: W3 "Pilot: 1 family x 2 regimes x 3 seeds, matched r
 
 ## Deviation recorded before launch (2026-11-03, before any persistent run started)
 
-**The persistent arm runs on an NVIDIA A40, not an L40S.** At launch time RunPod had no secure-cloud
-L40S anywhere: six attempts over 15 minutes were refused, and its stock query showed none. Rather than
-wait, the Coding lane switched the persistent arm to the cheapest secure-cloud GPU in stock, an A40 at
-$0.59/hr. A100 was the other option, at about $28 for three runs, over the pilot budget. All three
-persistent seeds run on A40. The resampled arm ran on L40S.
+**The persistent arm runs on a different GPU from the resampled arm (L40S).** At launch time RunPod had
+no secure-cloud L40S anywhere: six attempts over 15 minutes were refused, and its stock query showed
+none. Rather than wait, the persistent arm moved to a faster secure-cloud GPU that was in stock: an
+NVIDIA H100 NVL, with an A100 80 GB as the fallback if the H100 cannot be had. All three persistent
+seeds use the same GPU model. The model used is recorded in every manifest and quoted in the report.
 
-- Everything else stays as above: commit, runner hash, verl, libraries, every training setting.
-  `MAX_RUNTIME_MIN` is raised from 720 to 960 because an A40 run takes about 9 hours. That timer only
-  decides when a pod stops itself.
-- Both GPUs have 48 GB and train in bf16. Run-to-run numerical noise is already in the seed SD,
-  because vLLM sampling differs on every pod. A systematic GPU effect on the endpoint cannot be ruled
-  out, though, so **the GPU difference must be stated wherever the result is quoted.**
+- Everything else stays as above: commit, runner hash, verl, libraries, every training setting,
+  including the self-stop timers.
+- Both arms train in bf16. Run-to-run numerical noise is already in the seed SD, because vLLM sampling
+  differs on every pod. A systematic GPU effect on the endpoint cannot be ruled out, though, so **the
+  GPU difference must be stated wherever the result is quoted.**
 - Check 1's GPU-model condition is applied with `--accept-gpu-diff`. Each arm must still use a single
   GPU model.
-- If the outcome is within about 1 point of `T` either way, one resampled seed re-run on A40 (about
-  $5) would show whether the GPU moved the endpoint. The Data analysis lane decides whether to buy it.
+- If the outcome is within about 1 point of `T` either way, one resampled seed re-run on the persistent
+  arm's GPU (about $10) would show whether the GPU moved the endpoint. The Data analysis lane decides whether to buy it.
 
 ## What is being tested
 
@@ -183,7 +182,7 @@ budget.
 python analysis/w3_pilot.py --resampled RUNS/w1-resamp15-s1 RUNS/w1-resamp15-s2 RUNS/w1-resamp15-s3 \
                             --persistent RUNS/w3-persist15-s1 RUNS/w3-persist15-s2 RUNS/w3-persist15-s3 \
                             --clean RUNS/w1-clean-s1 RUNS/w1-clean-s2 RUNS/w1-clean-s3 \
-                            --accept-gpu-diff      # persistent arm on A40, see "Deviation recorded before launch"
+                            --accept-gpu-diff      # persistent arm not on L40S, see "Deviation recorded before launch"
 ```
 
 Exit 0 when every validity check passes (whatever the outcome), 1 when the pilot is VOID.
