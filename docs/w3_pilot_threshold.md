@@ -7,23 +7,22 @@ record the date here and have the report quote both versions of the rule.**
 Tracker items this answers: W3 "Pilot: 1 family x 2 regimes x 3 seeds, matched rate" and its gate,
 "persistent-vs-resampled gap under 2x the seed std: stop pushing H2, pivot the headline to H3/H5".
 
-## Deviation recorded before launch (2026-11-03, before any persistent run started)
+## Launch note (2026-11-03/04, written before any persistent result)
 
-**The persistent arm runs on a different GPU from the resampled arm (L40S).** At launch time RunPod had
-no secure-cloud L40S anywhere: six attempts over 15 minutes were refused, and its stock query showed
-none. Rather than wait, the persistent arm moved to a faster secure-cloud GPU that was in stock: an
-NVIDIA H100 NVL, with an A100 80 GB as the fallback if the H100 cannot be had. All three persistent
-seeds use the same GPU model. The model used is recorded in every manifest and quoted in the report.
+**No GPU deviation: the persistent arm runs on L40S, like the resampled arm.** Two earlier commits to
+this file planned a GPU switch (A40, then H100 NVL or A100). That was because every launch was refused
+as "no instances". The cause turned out to be the launcher's host filter, not stock:
+`allowedCudaVersions=["13.0"]`, the highest value RunPod's API accepts, excludes hosts whose drivers
+report a newer CUDA. With the filter off, an L40S was granted at once.
 
-- Everything else stays as above: commit, runner hash, verl, libraries, every training setting,
-  including the self-stop timers.
-- Both arms train in bf16. Run-to-run numerical noise is already in the seed SD, because vLLM sampling
-  differs on every pod. A systematic GPU effect on the endpoint cannot be ruled out, though, so **the
-  GPU difference must be stated wherever the result is quoted.**
-- Check 1's GPU-model condition is applied with `--accept-gpu-diff`. Each arm must still use a single
-  GPU model.
-- If the outcome is within about 1 point of `T` either way, one resampled seed re-run on the persistent
-  arm's GPU (about $10) would show whether the GPU moved the endpoint. The Data analysis lane decides whether to buy it.
+- **The one environment difference: the host driver.** `w3-persist15-s1` runs on driver 595.91.07; the
+  gate's pods ran on 580.126.09. Same GPU model, same container, same torch/vllm/flash-attn builds
+  (check 1 compares all of these). The driver is recorded in every manifest.
+- Seed 1 passed the step-40 check against `w1-resamp15-s1`: every hash and setting equal; exactly the
+  55 predicted tasks inverted, each on every pass; inverted share 0.1473 (predicted 0.1475).
+- Seeds 2 and 3 are launched only on L40S. If either lands on another GPU, record it here before its
+  launch and apply check 1 with `--accept-gpu-diff`. That flag keeps the rule that each arm uses a
+  single GPU model.
 
 ## What is being tested
 
@@ -181,8 +180,9 @@ budget.
 ```
 python analysis/w3_pilot.py --resampled RUNS/w1-resamp15-s1 RUNS/w1-resamp15-s2 RUNS/w1-resamp15-s3 \
                             --persistent RUNS/w3-persist15-s1 RUNS/w3-persist15-s2 RUNS/w3-persist15-s3 \
-                            --clean RUNS/w1-clean-s1 RUNS/w1-clean-s2 RUNS/w1-clean-s3 \
-                            --accept-gpu-diff      # persistent arm not on L40S, see "Deviation recorded before launch"
+                            --clean RUNS/w1-clean-s1 RUNS/w1-clean-s2 RUNS/w1-clean-s3
 ```
+
+Add `--accept-gpu-diff` only if a persistent seed ran on a GPU other than L40S (see "Launch note").
 
 Exit 0 when every validity check passes (whatever the outcome), 1 when the pilot is VOID.
