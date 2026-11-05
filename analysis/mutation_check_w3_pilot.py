@@ -60,6 +60,8 @@ MUTATIONS = {
         ('r["exit"] == 0 and r["boots"] == 1 and r["all_steps"]', 'r["exit"] == 0 and r["boots"] == 1'),
     "seed count not checked":
         ("out.append((len(res) >= 3 and len(per) >= 3,", "out.append((True,"),
+    "one-seed arm reaches the gap computation (crash)":
+        ("if min(len(res), len(per)) < 2:", "if min(len(res), len(per)) < 1:"),
     "VOID ignored by the exit code":
         ("sys.exit(0 if valid else 1)", "sys.exit(0)"),
     "zero launch time treated as missing in costs":

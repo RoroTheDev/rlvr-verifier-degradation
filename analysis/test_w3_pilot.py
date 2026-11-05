@@ -337,6 +337,8 @@ class TestEndToEnd(unittest.TestCase):
     def test_seed_count_and_seed_sets(self):
         res, per = self.arms()
         self.assert_void(res[:2], per[:2], "at least 3 seeds")
+        self.assert_void(res, per[:1], "at least 3 seeds")   # one seed: no SD, VOID instead of a crash
+        self.assertIn("at least 2 seeds per arm", w.report(res[:1], per, LATE)[0])
         shutil.rmtree(self.root)
         os.makedirs(self.root)
         res, per = self.arms()

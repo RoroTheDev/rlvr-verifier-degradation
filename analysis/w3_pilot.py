@@ -214,6 +214,13 @@ def costs(state_paths):
 
 
 def report(res, per, late_steps, clean=None, accept_runner_diff=False, cost=None, accept_gpu_diff=False):
+    if min(len(res), len(per)) < 2:   # no seed SD, so no threshold: say so instead of failing inside welch()
+        checks = validity(res, per, accept_runner_diff, accept_gpu_diff)
+        L = [f"W3 pilot: the gap needs at least 2 seeds per arm to estimate the seed SD "
+             f"(resampled {len(res)}, persistent {len(per)})", "", "validity checks:"]
+        L += [f"  [{'ok' if ok else 'FAIL'}] {text}" for ok, text in checks]
+        L += ["", "OUTCOME: VOID (too few seeds for the rule)"]
+        return "\n".join(L), None, False, None
     w = g.welch([r["V"] for r in res], [r["V"] for r in per])
     wp = g.welch([r["V_pass1"] for r in res], [r["V_pass1"] for r in per])
     lb = w["D"] - (w["t"] * w["se"] if w["se"] > 0 else 0.0)
