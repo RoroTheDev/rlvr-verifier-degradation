@@ -134,7 +134,8 @@ def cmd_launch(a):
     }
     if a.cuda_versions:
         # verl's torch wheels are built for CUDA 13 and need NVIDIA driver >= 580. Pods on
-        # older hosts boot fine and nvidia-smi works, but torch then sees zero GPUs.
+        # older hosts boot fine and nvidia-smi works, but torch then sees zero GPUs (the runner's
+        # preflight reports CUDA_UNAVAILABLE). Off by default: see --cuda-versions.
         payload["allowedCudaVersions"] = [v.strip() for v in a.cuda_versions.split(",") if v.strip()]
     if a.volume_id:
         if not a.dc:
@@ -253,8 +254,11 @@ def main():
     l.add_argument("--volume-gb", type=int, default=30, help="size of /workspace (outputs only; the env lives on container disk)")
     l.add_argument("--container-disk", type=int, default=80, help="local disk holding verl, its venv and caches")
     l.add_argument("--image", default=DEFAULT_IMAGE)
-    l.add_argument("--cuda-versions", default="13.0",
-                   help="only schedule on hosts offering these CUDA versions (13.0 = driver >= 580, the API's highest value); '' disables the filter")
+    l.add_argument("--cuda-versions", default="",
+                   help="only schedule on hosts offering these CUDA versions, e.g. 13.0 (default: no filter). The API's "
+                        "highest value is 13.0 and on 2026-11-03 that filter refused every GPU type, apparently because "
+                        "newer-driver hosts are not matched by it. Old drivers are caught by verl_run.sh's preflight "
+                        "(CUDA_UNAVAILABLE, a few minutes in) instead")
     l.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="forwarded to verl_run.sh / the reward function (repeatable)")
     l.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=None,

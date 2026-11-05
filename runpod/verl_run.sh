@@ -27,6 +27,11 @@
 export DEBIAN_FRONTEND=noninteractive
 export PATH="$HOME/.local/bin:$PATH"
 
+# Harness version, written to every manifest. Bump it whenever this script, the reward function,
+# the scorer or the data builder changes what a run computes. 1 = tag w1-freeze; 2 = the W3 freeze
+# (docs/harness_freeze.md). Not an env var on purpose: a run cannot claim a version it did not run.
+HARNESS_VERSION=2
+
 WORK=${WORK:-/root/work}
 REPO_URL=${REPO_URL:-https://github.com/RoroTheDev/rlvr-verifier-degradation}
 REPO_REF=${REPO_REF:-main}            # branch, tag or commit of this repo; pin a tag for real runs
@@ -264,6 +269,7 @@ fi
   {
     echo "date_utc=$(date -u +%FT%TZ)"
     echo "run_name=$RUN_NAME"
+    echo "harness_version=$HARNESS_VERSION"
     # This script is passed to the pod as an argument, not cloned, so record what ran.
     # Compare with: git show <commit>:runpod/verl_run.sh | sha256sum
     echo "runner_script_sha256=$(printf '%s' "$BASH_EXECUTION_STRING" | sha256sum | cut -d' ' -f1)"

@@ -80,5 +80,22 @@ class TestFetch(unittest.TestCase):
         self.assertEqual((saved, failed), ([], []))
 
 
+class TestLaunchDefaults(unittest.TestCase):
+    def parse(self, *extra):
+        got, old_argv, old_fn = {}, sys.argv, launch.cmd_launch
+        launch.cmd_launch = lambda a: got.update(vars(a))
+        sys.argv = ["launch.py", "launch", "--run-name", "x", *extra]
+        try:
+            launch.main()
+        finally:
+            sys.argv, launch.cmd_launch = old_argv, old_fn
+        return got
+
+    def test_no_cuda_host_filter_by_default(self):
+        # the API's highest value, 13.0, refused every GPU type on 2026-11-03; the runner's preflight catches old drivers
+        self.assertEqual(self.parse()["cuda_versions"], "")
+        self.assertEqual(self.parse("--cuda-versions", "13.0")["cuda_versions"], "13.0")
+
+
 if __name__ == "__main__":
     unittest.main()
