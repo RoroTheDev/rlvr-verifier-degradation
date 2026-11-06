@@ -31,8 +31,8 @@ report a newer CUDA. With the filter off, an L40S was granted at once.
   when an idle pod stops itself after the run ends, and check 1 already ignores it.
 - All three runs finished overnight while the controlling PC was asleep. Their pods stopped
   themselves and could restart only once their host had a free GPU. Seed 1 was collected about 20
-  hours after it finished and seed 3 about 11 hours after; seed 2 was still waiting when this was
-  written. No data was lost: every collected run passed the fetch check (exit 0, one boot, all 260
+  hours after it finished, seed 3 about 11 hours after and seed 2 about 19 hours after. No data was
+  lost: every collected run passed the fetch check (exit 0, one boot, all 260
   steps, exact per-sample record counts). Collection never touches training.
 - Numbers and costs: `docs/w3_pilot_runs.md`.
 
