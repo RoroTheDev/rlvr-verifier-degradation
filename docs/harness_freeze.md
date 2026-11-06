@@ -1,7 +1,8 @@
 # Harness freeze, version 2 (W3)
 
 **Status: pinned, not yet tagged.** The tag `w3-freeze` goes on the commit that adds this file
-only after the re-verification run below passes. That run is paid (about $1) and needs a go.
+only after the re-verification run below passes. That run (`w3-freeze-check`) was launched on
+2026-11-05; its pod stopped itself before collection and is waiting for a free GPU on its host.
 Version 1 is tag `w1-freeze`. Every manifest from this version on records `harness_version=2`.
 
 ## Pins
@@ -37,10 +38,15 @@ pilot script already has, and say so.
 
 ## Re-verification before tagging
 
-One run: L40S, Qwen3-1.7B, MBPP, `STEPS=20` with `MBPP_PASSES=3` (data for 23 steps; the MBPP preset
-otherwise sets 260), `group_persistent` at p = 0.15,
-targeted with the W2 smoke bucket file (`data_prep/buckets/smoke_parity.csv`). It costs about
-$0.70 (35 minutes at $1.11/hr) and needs a go. It passes when:
+The W2 targeted smoke recipe, run on the commit to be tagged: run `w3-freeze-check` on L40S with
+Qwen3-1.7B and MBPP.
+
+- **Length:** `STEPS=16`, `MBPP_PASSES=3`, `VAL_FREQ=16`. The MBPP preset otherwise sets 260 steps.
+- **Noise:** `group_persistent` at p = 0.5, targeted at `bucket=odd` with the smoke bucket file
+  `data_prep/buckets/smoke_parity.csv`. p = 0.5 inverts enough targeted groups for a sharp check.
+- **Cost:** the W2 run cost $0.48.
+
+It passes when:
 
 - the run exits 0, booted once, with every step present and exact per-sample record counts (the
   `fleet.py` fetch check);
