@@ -1,8 +1,9 @@
 # Harness freeze, version 2 (W3)
 
-**Status: pinned, not yet tagged.** The tag `w3-freeze` goes on the commit that adds this file
-only after the re-verification run below passes. That run (`w3-freeze-check`) was launched on
-2026-11-05; its pod stopped itself before collection and is waiting for a free GPU on its host.
+**Status: tagged `w3-freeze` = `685dfe9` (2026-11-12).** The re-verification run below passed on
+that commit: `w3-freeze-check`, 2026-11-12, L40S, W&B `1hbry75f`, $0.55. The tag message lists the
+pins and the results. A first attempt on 2026-11-05 finished, but its pod was stuck stopped for a
+week and was terminated uncollected. Commits after `685dfe9` change docs only.
 Version 1 is tag `w1-freeze`. Every manifest from this version on records `harness_version=2`.
 
 ## Pins
